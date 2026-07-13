@@ -1,0 +1,14 @@
+// Package service contains protocol-independent business logic.
+package service
+
+import "context"
+
+type Service struct{}
+
+func New() *Service {
+	return &Service{}
+}
+
+func (s *Service) Hello(context.Context) string {
+	return "hello from {{.Name}}"
+}

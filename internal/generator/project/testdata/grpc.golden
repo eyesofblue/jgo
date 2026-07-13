@@ -1,0 +1,12 @@
+.gitignore
+Makefile
+README.md
+api/proto/demo_app/v1/service.proto
+buf.gen.yaml
+buf.yaml
+cmd/server/main.go
+configs/local.yaml
+go.mod
+internal/service/service.go
+internal/transport/grpc/register.gen.go
+internal/transport/grpc/register.go

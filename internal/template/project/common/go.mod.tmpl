@@ -1,0 +1,15 @@
+module {{.Module}}
+
+go 1.22.0
+
+require github.com/eyesofblue/jgo {{.JGOVersion}}
+{{if .HasWeb}}
+require github.com/oapi-codegen/runtime v1.1.1
+{{end}}
+{{if .HasGRPC}}
+require google.golang.org/grpc v1.71.3
+require google.golang.org/protobuf v1.36.7
+{{end}}
+{{if .JGOReplace}}
+replace github.com/eyesofblue/jgo => {{printf "%q" .JGOReplace}}
+{{end}}

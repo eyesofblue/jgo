@@ -1,0 +1,17 @@
+// Package grpctransport registers gRPC services.
+package grpctransport
+
+import (
+	"github.com/eyesofblue/jgo/server/grpcx"
+	"{{.Module}}/internal/service"
+	grpchealth "google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc"
+)
+
+func Register(application *service.Service) grpcx.RegisterFunc {
+	return func(registrar grpc.ServiceRegistrar) {
+		registerGenerated(registrar, application)
+		healthpb.RegisterHealthServer(registrar, grpchealth.NewServer())
+	}
+}

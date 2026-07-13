@@ -1,0 +1,44 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"time"
+
+	"github.com/eyesofblue/jgo/app"
+	"github.com/eyesofblue/jgo/server/grpcx"
+	"{{.Module}}/internal/service"
+	grpctransport "{{.Module}}/internal/transport/grpc"
+)
+
+func main() {
+	if err := run(); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	applicationService := service.New()
+	grpcServer, err := grpcx.New(
+		grpcx.WithAddress(":9090"),
+		grpcx.WithLogger(logger),
+		grpcx.WithReflection(true),
+		grpcx.WithRegister(grpctransport.Register(applicationService)),
+	)
+	if err != nil {
+		return err
+	}
+
+	application := app.New(
+		app.WithName("{{.Name}}"),
+		app.WithShutdownTimeout(10*time.Second),
+	)
+	if err := application.Add(grpcServer); err != nil {
+		return err
+	}
+	return application.Run(context.Background())
+}

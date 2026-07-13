@@ -1,0 +1,11 @@
+.gitignore
+Makefile
+README.md
+api/http/model/doc.go
+api/http/openapi.yaml
+cmd/server/main.go
+configs/local.yaml
+go.mod
+internal/service/service.go
+internal/transport/http/routes.gen.go
+internal/transport/http/routes.go

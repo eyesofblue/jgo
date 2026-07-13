@@ -1,0 +1,26 @@
+// Package httptransport adapts HTTP requests to the service layer.
+package httptransport
+
+import (
+	"net/http"
+
+	"github.com/eyesofblue/jgo/health"
+	"github.com/eyesofblue/jgo/response"
+	"{{.Module}}/internal/service"
+)
+
+func NewHandler(application *service.Service) http.Handler {
+	mux := http.NewServeMux()
+	probe := health.New()
+	probe.SetReady(true)
+	if err := probe.Register(mux); err != nil {
+		panic(err)
+	}
+	mux.HandleFunc("GET /hello", func(writer http.ResponseWriter, request *http.Request) {
+		_ = response.Success(writer, request, map[string]string{
+			"message": application.Hello(request.Context()),
+		})
+	})
+	registerGeneratedRoutes(mux, application)
+	return mux
+}
