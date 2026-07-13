@@ -19,6 +19,7 @@ First public framework release candidate.
 - Developer workflow commands: `jgo doctor`, `jgo generate`, `jgo run`, and `jgo build`.
 - Bash/Zsh completion, macOS/Linux CI, real generation consistency checks, and tag-based release archives.
 - Real compilation checks for web, gRPC, and mixed generated projects, including complex HTTP struct bodies and object/list responses.
+- macOS CI linking compatible with current runners while retaining the Go 1.22 minimum, and Go 1.24 release builds with Mach-O `LC_UUID` metadata.
 
 ### Compatibility
 

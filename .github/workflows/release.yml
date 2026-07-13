@@ -17,7 +17,9 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version: 1.22.x
+          # Go 1.24+ emits LC_UUID for internally linked Mach-O binaries,
+          # including Darwin binaries cross-compiled on Linux.
+          go-version: 1.24.x
           cache-dependency-path: go.sum
       - name: Test
         run: |

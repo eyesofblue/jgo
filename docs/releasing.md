@@ -20,4 +20,6 @@ JGO 使用 Semantic Versioning，Git tag 使用 `vMAJOR.MINOR.PATCH`。
 
 发布工作流会为 Linux/macOS 的 amd64/arm64 生成归档、生成 SHA-256 校验文件，并创建 GitHub Release。发布二进制通过 ldflags 写入 tag 版本，可使用 `jgo --version` 查看。
 
+项目源码最低兼容 Go 1.22.0；发布工作流使用 Go 1.24.x 构建归档。原因是 Go 1.24 起内部链接器默认给 macOS Mach-O 二进制写入 `LC_UUID`，可以保证在当前 macOS 上正常加载。Go 1.22 的 macOS CI 仍保留，并通过系统外部链接器验证最低版本兼容性。
+
 发布动作和首个版本号必须由维护者明确确认，自动化不得自行创建 tag。
