@@ -1,5 +1,7 @@
 # JGO
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 JGO is a standalone Go service framework and project scaffolding tool for HTTP/JSON and gRPC/protobuf services.
 
 Runtime support, project scaffolding, contract generation, unified debugging, and developer workflow commands are available. Start with the [documentation index](docs/README.md) or the [quick-start guide](docs/getting-started.md).
