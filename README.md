@@ -39,7 +39,7 @@ go install github.com/eyesofblue/jgo/cmd/jgo@latest
 jgo --version
 ```
 
-Before the first release tag is available, build from source after cloning the repository:
+For JGO framework development, you can also clone the repository and build from source:
 
 ```bash
 go build -trimpath -o bin/jgo ./cmd/jgo
@@ -55,42 +55,21 @@ command -v buf protoc-gen-go protoc-gen-go-grpc
 
 JGO never installs these tools silently. Exact module and tool versions are documented in [docs/dependencies.md](docs/dependencies.md).
 
-## Quick start
+## New project: create a service and its first API
 
-Create one of the three supported project types:
+Generated projects default to `github.com/eyesofblue/jgo v0.1.0`. During local framework development, add `--jgo-replace /absolute/path/to/jgo`; do not commit a machine-specific replacement for normal users.
+
+### Web service
+
+Create the project, define the request/response models, add the API, and then generate code:
 
 ```bash
-jgo new demo-web \
-  --module example.com/demo-web \
+jgo new user-web \
+  --module example.com/user-web \
   --type web
+cd user-web
 
-jgo new demo-grpc \
-  --module example.com/demo-grpc \
-  --type grpc
-
-jgo new demo-mixed \
-  --module example.com/demo-mixed \
-  --type mixed
-```
-
-The generated project defaults to `github.com/eyesofblue/jgo v0.1.0`. During local framework development, add `--jgo-replace /absolute/path/to/jgo`; do not commit a machine-specific replacement for normal users.
-
-Enter the generated project and verify the environment:
-
-```bash
-cd demo-web
-jgo doctor
-jgo generate
-jgo run
-```
-
-Web services listen on `:8080` by default. gRPC services listen on `:9090`; mixed projects start both under one application lifecycle.
-
-## Add an HTTP API
-
-Define complex request and response models as Go structs in `api/http/model/`, then add and generate the contract. JGO intentionally supports RPC-style HTTP paths such as `GET /get_user?uid=12345` and `POST /update_user`:
-
-```bash
+# Define the UpdateUserRequest and UserInfo Go structs under api/http/model/.
 jgo api add UpdateUser \
   --method POST \
   --path /update_user \
@@ -98,30 +77,106 @@ jgo api add UpdateUser \
   --response-data UserInfo
 
 jgo api generate
+# Implement the newly generated business method under internal/service/.
+go test ./...
+jgo run
 ```
 
-HTTP responses use the stable `{"code":0,"msg":"","data":...}` envelope. HTTP status and integer business error codes are managed separately.
+A new Web project includes `/hello` and health checks, but `api/http/openapi.yaml` initially has no business operations. Normally, run `jgo api add` before generation instead of running `jgo generate` immediately after `jgo new`. Web services listen on `:8080` by default.
+
+HTTP responses use the stable `{"code":0,"msg":"","data":...}` envelope:
 
 ```json
 {"code": 0, "msg": "", "data": {"uid": 12345, "name": "Albert"}}
 ```
 
-Business success is `code: 0`; transport failures use the appropriate HTTP status without reusing the business code field.
+Business success is `code: 0`; HTTP status represents the transport result, while the integer `code` represents the business result.
 
-## Add a gRPC API
+### gRPC service
 
-gRPC contracts use protobuf and the locked Buf toolchain:
+`make tools` installs the locked Buf and protobuf generators into the current Go development environment. Run it once per environment, not once per project:
 
 ```bash
-make tools
+jgo new user-rpc \
+  --module example.com/user-rpc \
+  --type grpc
+cd user-rpc
+
+make tools       # Run the first time this environment uses JGO gRPC.
+jgo doctor
 jgo rpc add GetUser --service GreeterService
-# Edit the generated GetUserRequest and GetUserResponse messages.
+# Edit the GetUserRequest and GetUserResponse messages under api/proto/.
 jgo rpc generate
+# Implement the generated GreeterServiceGetUser method under internal/service/.
+go test ./...
+jgo run
 ```
 
-JGO locks Buf `1.46.0`, `protoc-gen-go` `1.36.7`, and `protoc-gen-go-grpc` `1.5.1`, all compatible with the Go 1.22.0 baseline. Generated protobuf and transport files are replaceable; existing business service methods are preserved.
+The initial proto contains a sample `GreeterService.Echo` RPC; keep it or remove it when establishing the real contract. The gRPC Health service is always registered, and business services listen on `:9090` by default.
 
-gRPC business methods use `<Service><RPC>` names, for example `GreeterServiceGetUser`, which prevents HTTP/gRPC method collisions in mixed projects. The public protobuf service and RPC names remain unchanged.
+JGO locks Buf `1.46.0`, `protoc-gen-go` `1.36.7`, and `protoc-gen-go-grpc` `1.5.1`, all compatible with the Go 1.22.0 baseline. gRPC business methods use `<Service><RPC>` names, such as `GreeterServiceGetUser`; public protobuf service and RPC names remain unchanged.
+
+### Mixed service
+
+A mixed project maintains both OpenAPI and protobuf contracts while sharing one business layer and application lifecycle:
+
+```bash
+jgo new user-service \
+  --module example.com/user-service \
+  --type mixed
+cd user-service
+
+make tools       # Skip if the locked tools are already installed in this environment.
+jgo doctor
+# Add the required APIs and complete their structs/proto messages as shown above.
+jgo generate     # Generate both HTTP and gRPC code.
+go test ./...
+jgo run
+```
+
+Mixed projects listen on HTTP `:8080` and gRPC `:9090` by default.
+
+## Existing service: add an API
+
+### Add an HTTP API
+
+```bash
+# 1. Add or reuse request and response Go structs under api/http/model/.
+# 2. Add the operation to the OpenAPI contract.
+jgo api add GetUser \
+  --method GET \
+  --path /get_user \
+  --request uid:int64:required:query \
+  --response-data UserInfo
+
+# 3. Regenerate only the HTTP code.
+jgo api generate
+# 4. Implement the new business method; existing methods are preserved.
+go test ./...
+```
+
+### Add a gRPC API
+
+For example, add `GetUser` to an existing `GreeterService` that already has other RPCs:
+
+```bash
+jgo doctor       # Verify the locked tool versions in the current environment.
+jgo rpc add GetUser --service GreeterService
+# Edit GetUserRequest/GetUserResponse in the corresponding .proto file.
+jgo rpc generate
+# Implement the generated GreeterServiceGetUser method.
+go test ./...
+```
+
+If the same service name occurs in multiple proto files, select one with `--file api/proto/.../service.proto`. `jgo rpc generate` regenerates protobuf and transport code but never overwrites existing business methods.
+
+Choose a generation command according to the changed contracts:
+
+| Command | Scope |
+| --- | --- |
+| `jgo api generate` | HTTP/OpenAPI code only |
+| `jgo rpc generate` | gRPC/protobuf code only |
+| `jgo generate` | All HTTP and gRPC code in the project; useful for mixed projects and CI |
 
 ## Debug APIs
 

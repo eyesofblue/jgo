@@ -39,7 +39,7 @@ go install github.com/eyesofblue/jgo/cmd/jgo@latest
 jgo --version
 ```
 
-在首个 Release Tag 发布前，克隆仓库后从源码构建：
+参与 JGO 框架开发时，也可以克隆仓库后从源码构建：
 
 ```bash
 go build -trimpath -o bin/jgo ./cmd/jgo
@@ -55,42 +55,21 @@ command -v buf protoc-gen-go protoc-gen-go-grpc
 
 JGO 不会静默安装这些工具。完整 module 依赖和工具版本见[依赖说明](docs/dependencies.md)。
 
-## 快速开始
-
-创建三种类型中的任意一种项目：
-
-```bash
-jgo new demo-web \
-  --module example.com/demo-web \
-  --type web
-
-jgo new demo-grpc \
-  --module example.com/demo-grpc \
-  --type grpc
-
-jgo new demo-mixed \
-  --module example.com/demo-mixed \
-  --type mixed
-```
+## 新项目：创建服务和首个接口
 
 生成的项目默认依赖 `github.com/eyesofblue/jgo v0.1.0`。开发和联调 JGO 本身时，可以增加 `--jgo-replace /absolute/path/to/jgo`；正常使用时不要提交包含本机路径的 `replace`。
 
-进入生成的项目并检查环境：
+### Web 服务
+
+先创建项目，再定义请求/返回结构、增加接口并生成代码：
 
 ```bash
-cd demo-web
-jgo doctor
-jgo generate
-jgo run
-```
+jgo new user-web \
+  --module example.com/user-web \
+  --type web
+cd user-web
 
-Web 服务默认监听 `:8080`，gRPC 服务默认监听 `:9090`。mixed 项目在同一个应用生命周期内同时启动两种服务。
-
-## 增加 HTTP API
-
-复杂请求和返回模型使用 `api/http/model/` 中的 Go struct 定义，然后增加接口并生成代码。JGO 支持 `GET /get_user?uid=12345` 和 `POST /update_user` 这样的 RPC 风格 HTTP API：
-
-```bash
+# 在 api/http/model/ 中定义 UpdateUserRequest 和 UserInfo Go struct。
 jgo api add UpdateUser \
   --method POST \
   --path /update_user \
@@ -98,7 +77,12 @@ jgo api add UpdateUser \
   --response-data UserInfo
 
 jgo api generate
+# 实现 internal/service/ 中新生成的业务方法。
+go test ./...
+jgo run
 ```
+
+新 Web 项目自带 `/hello` 和健康检查；`api/http/openapi.yaml` 初始没有业务接口，因此通常先执行 `jgo api add`，不必在 `jgo new` 后立即执行 `jgo generate`。Web 服务默认监听 `:8080`。
 
 HTTP 响应统一使用 `{"code":0,"msg":"","data":...}`：
 
@@ -108,20 +92,91 @@ HTTP 响应统一使用 `{"code":0,"msg":"","data":...}`：
 
 业务成功码固定为 `code: 0`。HTTP status 表示传输层结果，整数 `code` 表示业务结果，两者不会混用。
 
-## 增加 gRPC API
+### gRPC 服务
 
-gRPC 契约使用 protobuf 和锁定版本的 Buf 工具链：
+`make tools` 把锁定版本的 Buf 和 protobuf 插件安装到当前 Go 开发环境；同一环境中只需安装一次，不需要每个项目都执行：
 
 ```bash
-make tools
+jgo new user-rpc \
+  --module example.com/user-rpc \
+  --type grpc
+cd user-rpc
+
+make tools       # 当前开发环境首次使用 JGO gRPC 时执行
+jgo doctor
 jgo rpc add GetUser --service GreeterService
-# 编辑生成的 GetUserRequest 和 GetUserResponse message 字段。
+# 编辑 api/proto/ 下的 GetUserRequest 和 GetUserResponse message 字段。
 jgo rpc generate
+# 实现 internal/service/ 中新生成的 GreeterServiceGetUser 方法。
+go test ./...
+jgo run
 ```
 
-JGO 锁定 Buf `1.46.0`、`protoc-gen-go` `1.36.7` 和 `protoc-gen-go-grpc` `1.5.1`，均兼容 Go 1.22.0 最低版本。protobuf 和 transport 生成文件可以覆盖更新，已有业务方法不会被覆盖。
+新 gRPC 项目的 proto 自带 `GreeterService.Echo` 示例，可以保留或在形成正式契约时删除。gRPC Health 服务始终注册，业务服务默认监听 `:9090`。
 
-gRPC 业务方法使用 `<Service><RPC>` 命名，例如 `GreeterServiceGetUser`，避免 mixed 项目中 HTTP 与 gRPC 接口同名冲突。对外 protobuf service 和 RPC 名称保持不变。
+JGO 锁定 Buf `1.46.0`、`protoc-gen-go` `1.36.7` 和 `protoc-gen-go-grpc` `1.5.1`，均兼容 Go 1.22.0 最低版本。gRPC 业务方法使用 `<Service><RPC>` 命名，例如 `GreeterServiceGetUser`；对外 protobuf service 和 RPC 名称保持不变。
+
+### mixed 服务
+
+mixed 项目同时维护 OpenAPI 和 protobuf 契约，并共用业务层和应用生命周期：
+
+```bash
+jgo new user-service \
+  --module example.com/user-service \
+  --type mixed
+cd user-service
+
+make tools       # 已在当前环境安装过时可跳过
+jgo doctor
+# 按上面的 Web/gRPC 流程增加所需接口并完善 struct/proto。
+jgo generate     # 同时生成 HTTP 和 gRPC 代码
+go test ./...
+jgo run
+```
+
+mixed 项目默认同时监听 HTTP `:8080` 和 gRPC `:9090`。
+
+## 存量服务：新增接口
+
+### 新增 HTTP 接口
+
+```bash
+# 1. 在 api/http/model/ 中新增或复用请求和返回 Go struct。
+# 2. 把接口加入 OpenAPI 契约。
+jgo api add GetUser \
+  --method GET \
+  --path /get_user \
+  --request uid:int64:required:query \
+  --response-data UserInfo
+
+# 3. 只重新生成 HTTP 代码。
+jgo api generate
+# 4. 实现新生成的业务方法，已有业务方法不会被覆盖。
+go test ./...
+```
+
+### 新增 gRPC 接口
+
+假设存量 `GreeterService` 已有多个 RPC，现在新增 `GetUser`：
+
+```bash
+jgo doctor       # 检查当前环境中的锁定工具版本
+jgo rpc add GetUser --service GreeterService
+# 编辑对应 .proto 中的 GetUserRequest/GetUserResponse 字段。
+jgo rpc generate
+# 实现新生成的 GreeterServiceGetUser 方法。
+go test ./...
+```
+
+如果同名 service 出现在多个 proto 文件中，通过 `--file api/proto/.../service.proto` 指定文件。`jgo rpc generate` 会重新生成 protobuf 和 transport 代码，但不会覆盖已有业务方法。
+
+生成命令按修改范围选择：
+
+| 命令 | 生成范围 |
+| --- | --- |
+| `jgo api generate` | 只生成 HTTP/OpenAPI 代码 |
+| `jgo rpc generate` | 只生成 gRPC/protobuf 代码 |
+| `jgo generate` | 生成当前项目包含的全部 HTTP 和 gRPC 代码，适合 mixed 项目或 CI |
 
 ## 调试接口
 
