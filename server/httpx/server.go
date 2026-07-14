@@ -15,8 +15,10 @@ import (
 	"github.com/eyesofblue/jgo/middleware"
 	"github.com/eyesofblue/jgo/middleware/accesslog"
 	"github.com/eyesofblue/jgo/middleware/recovery"
-	"github.com/eyesofblue/jgo/middleware/requestid"
 	timeoutmw "github.com/eyesofblue/jgo/middleware/timeout"
+	"github.com/eyesofblue/jgo/middleware/traceid"
+	"github.com/eyesofblue/jgo/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 var _ app.Component = (*Server)(nil)
@@ -56,10 +58,16 @@ func New(opts ...Option) (*Server, error) {
 	handler := middleware.Chain(config.handler, config.middlewares...)
 	if config.defaultMiddleware {
 		handler = middleware.Chain(handler,
-			requestid.New(nil),
+			traceid.New(),
 			accesslog.New(config.logger),
 			timeoutmw.New(config.requestTimeout),
 			recovery.New(config.logger),
+		)
+		handler = otelhttp.NewHandler(handler, config.name,
+			otelhttp.WithPropagators(telemetry.Propagator()),
+			otelhttp.WithSpanNameFormatter(func(_ string, request *http.Request) string {
+				return request.Method + " " + request.URL.Path
+			}),
 		)
 	}
 

@@ -9,17 +9,25 @@ import (
 	"testing"
 
 	jerrors "github.com/eyesofblue/jgo/errors"
-	"github.com/eyesofblue/jgo/middleware/requestid"
+	"github.com/eyesofblue/jgo/middleware/traceid"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestSuccess(t *testing.T) {
-	handler := requestid.New(func() string { return "request-1" })(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	handler := traceid.New()(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if err := Success(writer, request, map[string]int{"id": 7}); err != nil {
 			t.Errorf("Success() error = %v", err)
 		}
 	}))
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	traceID, _ := trace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
+	spanID, _ := trace.SpanIDFromHex("0123456789abcdef")
+	request = request.WithContext(trace.ContextWithSpanContext(request.Context(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: traceID,
+		SpanID:  spanID,
+	})))
+	handler.ServeHTTP(response, request)
 
 	var envelope Envelope
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
@@ -28,8 +36,8 @@ func TestSuccess(t *testing.T) {
 	if response.Code != http.StatusOK || envelope.Code != 0 || envelope.Msg != "" {
 		t.Fatalf("response = %d, %+v", response.Code, envelope)
 	}
-	if response.Header().Get("X-Request-ID") != "request-1" {
-		t.Fatalf("X-Request-ID = %q", response.Header().Get("X-Request-ID"))
+	if response.Header().Get(traceid.Header) != traceID.String() {
+		t.Fatalf("X-Trace-ID = %q", response.Header().Get(traceid.Header))
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {

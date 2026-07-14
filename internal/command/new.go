@@ -27,7 +27,7 @@ func newProjectCommand(stdout io.Writer) *cobra.Command {
 	options := newProjectOptions{}
 	command := &cobra.Command{
 		Use:   "new <project-name>",
-		Short: "Create a web, grpc, or mixed JGO project",
+		Short: "Create a web, grpc, mixed, or proto JGO project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			goVersion := options.goVersion
@@ -71,7 +71,7 @@ func newProjectCommand(stdout io.Writer) *cobra.Command {
 	}
 	flags := command.Flags()
 	flags.StringVar(&options.module, "module", "", "Go module path (required)")
-	flags.StringVar(&options.projectType, "type", "", "project type: web, grpc, or mixed (required)")
+	flags.StringVar(&options.projectType, "type", "", "project type: web, grpc, mixed, or proto (required)")
 	flags.StringVarP(&options.output, "output", "o", "", "target directory (defaults to project name)")
 	flags.StringVar(&options.jgoVersion, "jgo-version", project.DefaultJGOVersion, "JGO module version")
 	flags.StringVar(&options.jgoReplace, "jgo-replace", "", "local JGO module path for framework development")

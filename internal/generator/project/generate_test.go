@@ -14,7 +14,7 @@ import (
 func TestGenerateProjectTrees(t *testing.T) {
 	t.Parallel()
 
-	for _, projectType := range []Type{TypeWeb, TypeGRPC, TypeMixed} {
+	for _, projectType := range []Type{TypeWeb, TypeGRPC, TypeMixed, TypeProto} {
 		projectType := projectType
 		t.Run(string(projectType), func(t *testing.T) {
 			t.Parallel()
@@ -57,6 +57,15 @@ func TestGenerateProjectTrees(t *testing.T) {
 			}
 			if strings.Contains(string(readme), "GetUser") || !strings.Contains(string(readme), "jgo list") {
 				t.Fatalf("generated README contains a stale API example or lacks jgo list:\n%s", readme)
+			}
+			if projectType == TypeProto {
+				if _, err := os.Stat(filepath.Join(target, "cmd", "server", "main.go")); !os.IsNotExist(err) {
+					t.Fatalf("proto project unexpectedly contains a server: %v", err)
+				}
+				goMod, err := os.ReadFile(filepath.Join(target, "go.mod"))
+				if err != nil || strings.Contains(string(goMod), "github.com/eyesofblue/jgo") {
+					t.Fatalf("proto project has a JGO runtime dependency: %v\n%s", err, goMod)
+				}
 			}
 		})
 	}
@@ -135,7 +144,7 @@ func TestGeneratedProjectsCompile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve repository root: %v", err)
 	}
-	for _, projectType := range []Type{TypeWeb, TypeGRPC, TypeMixed} {
+	for _, projectType := range []Type{TypeWeb, TypeGRPC, TypeMixed, TypeProto} {
 		projectType := projectType
 		t.Run(string(projectType), func(t *testing.T) {
 			target := filepath.Join(t.TempDir(), "demo-app")

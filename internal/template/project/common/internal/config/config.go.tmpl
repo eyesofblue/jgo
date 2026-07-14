@@ -33,7 +33,9 @@ func (duration *Duration) UnmarshalText(text []byte) error {
 
 // Config is the generated service configuration.
 type Config struct {
-	Service Service `yaml:"service"`
+	Service   Service              `yaml:"service"`
+	Telemetry Telemetry            `yaml:"telemetry"`
+	RPCClient map[string]RPCClient `yaml:"rpc_client"`
 }
 
 // Service contains process-level server settings.
@@ -44,14 +46,57 @@ type Service struct {
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
 }
 
+// Telemetry contains process observability settings.
+type Telemetry struct {
+	Tracing Tracing `yaml:"tracing"`
+}
+
+// Tracing configures W3C trace-context creation and optional OTLP export.
+type Tracing struct {
+	Enabled     bool         `yaml:"enabled"`
+	SampleRatio float64      `yaml:"sample_ratio"`
+	Exporter    OTLPExporter `yaml:"exporter"`
+}
+
+// OTLPExporter configures the OpenTelemetry OTLP/gRPC exporter.
+type OTLPExporter struct {
+	Enabled  bool   `yaml:"enabled"`
+	Endpoint string `yaml:"endpoint"`
+	Insecure bool   `yaml:"insecure"`
+}
+
+// RPCClient configures one named outbound gRPC dependency.
+type RPCClient struct {
+	Address string          `yaml:"address"`
+	Timeout Duration        `yaml:"timeout"`
+	TLS     RPCClientTLS    `yaml:"tls"`
+}
+
+// RPCClientTLS configures transport security for an outbound gRPC dependency.
+type RPCClientTLS struct {
+	Enabled    bool   `yaml:"enabled"`
+	ServerName string `yaml:"server_name"`
+	CAFile     string `yaml:"ca_file"`
+}
+
 // Load applies flag > environment > YAML > default precedence.
 func Load(arguments []string) (Config, error) {
-	config := Config{Service: Service{
-		Name:            "{{.Name}}",
-		HTTPAddress:     ":8080",
-		GRPCAddress:     ":9090",
-		ShutdownTimeout: Duration{Duration: 10 * time.Second},
-	}}
+	config := Config{
+		Service: Service{
+			Name:            "{{.Name}}",
+			HTTPAddress:     ":8080",
+			GRPCAddress:     ":9090",
+			ShutdownTimeout: Duration{Duration: 10 * time.Second},
+		},
+		Telemetry: Telemetry{Tracing: Tracing{
+			Enabled:     true,
+			SampleRatio: 0.1,
+			Exporter: OTLPExporter{
+				Endpoint: "127.0.0.1:4317",
+				Insecure: true,
+			},
+		}},
+	}
 
 	set := flag.NewFlagSet("{{.Name}}", flag.ContinueOnError)
 	set.SetOutput(io.Discard)
@@ -113,6 +158,23 @@ func (config Config) Validate() error {
 	}
 	if config.Service.ShutdownTimeout.Duration <= 0 {
 		return errors.New("config: service.shutdown_timeout must be positive")
+	}
+	if config.Telemetry.Tracing.SampleRatio < 0 || config.Telemetry.Tracing.SampleRatio > 1 {
+		return errors.New("config: telemetry.tracing.sample_ratio must be between 0 and 1")
+	}
+	if config.Telemetry.Tracing.Exporter.Enabled && strings.TrimSpace(config.Telemetry.Tracing.Exporter.Endpoint) == "" {
+		return errors.New("config: telemetry.tracing.exporter.endpoint is required when export is enabled")
+	}
+	for name, client := range config.RPCClient {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("config: rpc_client name is required")
+		}
+		if strings.TrimSpace(client.Address) == "" {
+			return fmt.Errorf("config: rpc_client.%s.address is required", name)
+		}
+		if client.Timeout.Duration < 0 {
+			return fmt.Errorf("config: rpc_client.%s.timeout must not be negative", name)
+		}
 	}
 	return nil
 }

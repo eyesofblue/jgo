@@ -12,6 +12,7 @@ import (
 func Register(application *service.Service) grpcx.RegisterFunc {
 	return func(registrar grpc.ServiceRegistrar) {
 		registerGenerated(registrar, application)
+		registerExternal(registrar, application)
 		healthpb.RegisterHealthServer(registrar, grpchealth.NewServer())
 	}
 }

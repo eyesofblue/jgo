@@ -2,7 +2,7 @@
 
 JGO 使用 Semantic Versioning，Git tag 使用 `vMAJOR.MINOR.PATCH`。
 
-当前发布版本为 `v0.2.0`（2026-07-14）。后续版本在维护者实际创建 tag 前，CHANGELOG 中保持 `Unreleased`，不得提前宣称已经发布。
+当前发布候选版本为 `v0.3.0`（2026-07-14）。在维护者实际创建 tag 前，不得对外宣称已经发布。
 
 - `MAJOR`：稳定版之后的不兼容公开 API 变更。
 - `MINOR`：向后兼容的新能力；在 `v0` 阶段也用于明确的接口演进。
@@ -12,7 +12,7 @@ JGO 使用 Semantic Versioning，Git tag 使用 `vMAJOR.MINOR.PATCH`。
 
 1. 确认 `go.mod` 仍为 Go 1.24.0 下限。
 2. 执行 `make ci`。
-3. 执行 `./scripts/verify-generation.sh`。
+3. 执行 `./scripts/verify-generation.sh`；除生成与构建外，必须通过 proto module → gRPC server → Web caller 的真实运行验收，包括 trace_id、3 秒超时、`Unavailable` 和进程级 `/healthz`。
 4. 在 Linux 和 macOS CI 上通过 test、race、vet、format 和 build。
 5. 更新 README、快速入门、实施记录和 release notes。
 6. 确认生成器、模板和锁定工具版本一致。

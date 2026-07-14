@@ -89,6 +89,7 @@ type ServiceStub struct {
 // GenerateResult describes user-owned files created during protobuf generation.
 type GenerateResult struct {
 	CreatedStubs []ServiceStub
+	ProtocolOnly bool
 }
 
 // Generate lints protobuf contracts, invokes Buf, and updates JGO's gRPC adapters.
@@ -132,6 +133,10 @@ func generateWithResult(ctx context.Context, root string, commands runner) (Gene
 			return GenerateResult{}, fmt.Errorf("protobuf: inspect %s: %w", configuration, statErr)
 		}
 	}
+	serviceProject, err := hasServiceProjectLayout(root)
+	if err != nil {
+		return GenerateResult{}, err
+	}
 	if err := checkTools(ctx, root, commands); err != nil {
 		return GenerateResult{}, err
 	}
@@ -143,6 +148,9 @@ func generateWithResult(ctx context.Context, root string, commands runner) (Gene
 	}
 	if _, err := commands.Run(ctx, root, "buf", "generate"); err != nil {
 		return GenerateResult{}, err
+	}
+	if !serviceProject {
+		return GenerateResult{ProtocolOnly: true}, nil
 	}
 
 	services, err := discoverGeneratedServices(root, module)
@@ -157,6 +165,32 @@ func generateWithResult(ctx context.Context, root string, commands runner) (Gene
 		return GenerateResult{}, err
 	}
 	return GenerateResult{CreatedStubs: stubs}, nil
+}
+
+func hasServiceProjectLayout(root string) (bool, error) {
+	required := []string{
+		filepath.Join("cmd", "server", "main.go"),
+		filepath.Join("internal", "service", "service.go"),
+		filepath.Join("internal", "transport", "grpc", "register.go"),
+	}
+	found := 0
+	for _, relative := range required {
+		info, err := os.Stat(filepath.Join(root, relative))
+		if err == nil && info.Mode().IsRegular() {
+			found++
+			continue
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return false, fmt.Errorf("protobuf: inspect service project layout %s: %w", relative, err)
+		}
+	}
+	if found == 0 {
+		return false, nil
+	}
+	if found != len(required) {
+		return false, fmt.Errorf("protobuf: incomplete service project layout: require cmd/server/main.go, internal/service/service.go, and internal/transport/grpc/register.go")
+	}
+	return true, nil
 }
 
 func checkTools(ctx context.Context, root string, commands runner) error {
@@ -426,6 +460,8 @@ func writeTransport(root, module string, services []generatedService) error {
 		output.WriteString("\t\"context\"\n")
 		output.WriteString("\tstderrors \"errors\"\n")
 		output.WriteString(fmt.Sprintf("\tjgoerrors %q\n", "github.com/eyesofblue/jgo/errors"))
+		output.WriteString("\t\"go.opentelemetry.io/otel/attribute\"\n")
+		output.WriteString("\t\"go.opentelemetry.io/otel/trace\"\n")
 	}
 	output.WriteString(fmt.Sprintf("\t\"%s/internal/service\"\n", module))
 	seenImports := map[string]bool{}
@@ -444,7 +480,7 @@ func writeTransport(root, module string, services []generatedService) error {
 			output.WriteString(fmt.Sprintf("\tresponse, err := server.application.%s(ctx, request)\n", method.BusinessName))
 			output.WriteString("\tif err == nil {\n\t\treturn response, nil\n\t}\n")
 			output.WriteString("\tvar businessError *jgoerrors.Error\n")
-			output.WriteString(fmt.Sprintf("\tif stderrors.As(err, &businessError) {\n\t\treturn &%s.%s{Code: int32(businessError.Code()), Msg: businessError.Message()}, nil\n\t}\n", service.Alias, method.Response))
+			output.WriteString(fmt.Sprintf("\tif stderrors.As(err, &businessError) {\n\t\ttrace.SpanFromContext(ctx).SetAttributes(\n\t\t\tattribute.Int64(\"jgo.business_code\", int64(businessError.Code())),\n\t\t\tattribute.String(\"jgo.business_message\", businessError.Message()),\n\t\t)\n\t\treturn &%s.%s{Code: int32(businessError.Code()), Msg: businessError.Message()}, nil\n\t}\n", service.Alias, method.Response))
 			output.WriteString("\treturn nil, err\n}\n\n")
 		}
 	}

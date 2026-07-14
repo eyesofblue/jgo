@@ -21,10 +21,11 @@ import (
 const jgoModulePath = "github.com/eyesofblue/jgo"
 
 type projectInfo struct {
-	root    string
-	module  string
-	hasWeb  bool
-	hasGRPC bool
+	root      string
+	module    string
+	hasWeb    bool
+	hasGRPC   bool
+	hasServer bool
 }
 
 func newGenerateCommand(stdout io.Writer) *cobra.Command {
@@ -61,7 +62,11 @@ func newGenerateCommand(stdout io.Writer) *cobra.Command {
 				if err := printCreatedServiceStubs(stdout, result); err != nil {
 					return err
 				}
-				_, _ = fmt.Fprintln(stdout, "generated protobuf and gRPC code; run go test ./...")
+				if result.ProtocolOnly {
+					_, _ = fmt.Fprintln(stdout, "generated shared protobuf and gRPC Go packages; run go test ./...")
+				} else {
+					_, _ = fmt.Fprintln(stdout, "generated protobuf and gRPC code; run go test ./...")
+				}
 			}
 			return nil
 		},
@@ -94,6 +99,9 @@ func newRunCommand(stdout, stderr io.Writer) *cobra.Command {
 			project, err := inspectProject(root)
 			if err != nil {
 				return err
+			}
+			if !project.hasServer {
+				return fmt.Errorf("run project: proto projects do not have a server process")
 			}
 			arguments := []string{"run", "./cmd/server"}
 			if len(args) > 0 {
@@ -128,6 +136,9 @@ func newBuildCommand(stdout, stderr io.Writer) *cobra.Command {
 			project, err := inspectProject(options.root)
 			if err != nil {
 				return err
+			}
+			if !project.hasServer {
+				return fmt.Errorf("build project: proto projects do not have a server binary; use `go build ./...` to verify generated packages")
 			}
 			output := strings.TrimSpace(options.output)
 			if output == "" {
@@ -171,7 +182,9 @@ func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
 	checks = append(checks, doctorCheck{name: "project", err: projectErr})
 	checks = append(checks, doctorCheck{name: "Go >= " + projectgen.MinimumGoVersion, err: checkGoVersion(ctx, root)})
 	if projectErr == nil {
-		checks = append(checks, doctorCheck{name: "JGO module dependency", err: checkJGOModule(project.root)})
+		if project.hasServer {
+			checks = append(checks, doctorCheck{name: "JGO module dependency", err: checkJGOModule(project.root)})
+		}
 		if project.hasWeb {
 			_, err := callruntime.ListHTTP(project.root)
 			checks = append(checks, doctorCheck{name: "OpenAPI contract", err: err})
@@ -222,7 +235,11 @@ func inspectProject(root string) (projectInfo, error) {
 	if !project.hasWeb && !project.hasGRPC {
 		return projectInfo{}, fmt.Errorf("project: no OpenAPI or protobuf contract found under %s", absolute)
 	}
-	if !regularFile(filepath.Join(absolute, "cmd", "server", "main.go")) {
+	project.hasServer = regularFile(filepath.Join(absolute, "cmd", "server", "main.go"))
+	if !project.hasServer && project.hasWeb {
+		return projectInfo{}, fmt.Errorf("project: missing cmd/server/main.go")
+	}
+	if !project.hasServer && !project.hasGRPC {
 		return projectInfo{}, fmt.Errorf("project: missing cmd/server/main.go")
 	}
 	return project, nil

@@ -39,6 +39,24 @@ func TestGenerateCommandDetectsWebContract(t *testing.T) {
 	}
 }
 
+func TestProtoProjectRejectsRunAndServerBuild(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "company-api")
+	_, err := projectgen.Generate(projectgen.Config{
+		Name: "company-api", Module: "example.com/company-api", Type: projectgen.TypeProto,
+		TargetDir: root, SkipTidy: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := Execute(&output, &output, []string{"run", "--root", root}); err == nil || !strings.Contains(err.Error(), "do not have a server process") {
+		t.Fatalf("run error = %v", err)
+	}
+	if err := Execute(&output, &output, []string{"build", "--root", root}); err == nil || !strings.Contains(err.Error(), "do not have a server binary") {
+		t.Fatalf("build error = %v", err)
+	}
+}
+
 func TestBuildAndRunCommands(t *testing.T) {
 	root := minimalRunnableProject(t)
 	var output bytes.Buffer

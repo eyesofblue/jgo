@@ -29,6 +29,17 @@ jgo build
 ```
 
 This README documents the workflow, not a duplicated API inventory. Run `jgo list` for the current interfaces; OpenAPI and protobuf files are the source of truth.
+
+## Tracing and logging
+
+OpenTelemetry Trace Context is enabled by default in `configs/local.yaml`; OTLP export is disabled until an endpoint is explicitly configured. HTTP and gRPC propagate W3C `traceparent`, HTTP responses include `X-Trace-ID`, and application shutdown flushes tracing after servers stop.
+
+Use structured context-aware logs so trace correlation fields are attached automatically:
+
+```go
+logx.InfoCtx(ctx, "operation completed", "key", value)
+logx.ErrorCtx(ctx, "operation failed", "key", value, "err", err)
+```
 {{if .HasWeb}}
 
 ## HTTP API
@@ -51,7 +62,7 @@ Install the locked Buf toolchain once per development environment. New RPC respo
 
 ```bash
 jgo tools install
-jgo rpc add RPCName --service {{.ServiceName}}
+jgo rpc pbapi add RPCName --service {{.ServiceName}}
 # Edit request fields and add response business fields from number 3 in
 # api/proto/{{.PackageName}}/v1/service.proto.
 jgo rpc generate
@@ -63,6 +74,12 @@ jgo list
 `jgo rpc generate` overwrites generated protobuf and transport files, but never overwrites an existing business service method.
 Generated business methods use `<Service><RPC>` names, so mixed projects can safely use the same operation name over HTTP and gRPC. `jgo call grpc` displays zero values for non-optional fields; unset `optional` fields remain omitted.
 An explicit `jgo/errors.Error` returned by a business method becomes an `OK` gRPC Response with its `code/msg`. Unknown errors, panics, cancellation, and timeouts use non-`OK` gRPC status codes.
+
+Named outbound gRPC dependencies are configured under `rpc_client` in `configs/local.yaml` and managed with `github.com/eyesofblue/jgo/client/grpcx`. Connections are lazy, the default unary timeout is 3 seconds, the earlier of the client timeout and caller context deadline wins, and unavailable dependencies do not block startup or affect `/healthz`.
+
+Use `jgo rpc server add <Service> --module <module>@<version>` to implement a Service from a shared proto module. Use `jgo rpc client add <Service> --module <module>@<version> --name <name>` to inject its typed client as `Service.RPC.<Name>`. JGO discovers a unique generated package automatically; use `--package` when the same Service exists in multiple protobuf API versions.
+
+The client name is a stable config/code identifier and cannot be renamed. Change address, timeout, and TLS values directly under `rpc_client.<name>` in YAML.
 {{end}}
 {{if eq .JGOVersion "v0.0.0"}}
 

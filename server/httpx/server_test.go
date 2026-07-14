@@ -11,10 +11,13 @@ import (
 	"time"
 
 	"github.com/eyesofblue/jgo/app"
+	"github.com/eyesofblue/jgo/middleware/traceid"
 	"github.com/eyesofblue/jgo/response"
+	"github.com/eyesofblue/jgo/telemetry"
 )
 
 func TestServerRunsAsAppComponent(t *testing.T) {
+	tracing := newTestTracing(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /hello", func(writer http.ResponseWriter, request *http.Request) {
 		_ = response.Success(writer, request, map[string]string{"message": "hello"})
@@ -29,6 +32,9 @@ func TestServerRunsAsAppComponent(t *testing.T) {
 	}
 
 	application := app.New(app.WithShutdownTimeout(time.Second))
+	if err := application.Add(tracing); err != nil {
+		t.Fatal(err)
+	}
 	if err := application.Add(server); err != nil {
 		t.Fatal(err)
 	}
@@ -37,13 +43,18 @@ func TestServerRunsAsAppComponent(t *testing.T) {
 	go func() { done <- application.Run(ctx) }()
 
 	address := waitForAddress(t, server)
-	responseValue, err := http.Get("http://" + address + "/hello")
+	request, err := http.NewRequest(http.MethodGet, "http://"+address+"/hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("traceparent", "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
+	responseValue, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer responseValue.Body.Close()
-	if responseValue.StatusCode != http.StatusOK || responseValue.Header.Get("X-Request-ID") == "" {
-		t.Fatalf("status = %d, request ID = %q", responseValue.StatusCode, responseValue.Header.Get("X-Request-ID"))
+	if responseValue.StatusCode != http.StatusOK || responseValue.Header.Get(traceid.Header) != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("status = %d, trace ID = %q", responseValue.StatusCode, responseValue.Header.Get(traceid.Header))
 	}
 
 	cancel()
@@ -58,6 +69,8 @@ func TestServerRunsAsAppComponent(t *testing.T) {
 }
 
 func TestDefaultMiddlewareRecoversPanics(t *testing.T) {
+	tracing := newTestTracing(t)
+	defer tracing.Stop(context.Background())
 	server, err := New(
 		WithAddress("127.0.0.1:0"),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
@@ -91,6 +104,15 @@ func TestDefaultMiddlewareRecoversPanics(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func newTestTracing(t *testing.T) *telemetry.Tracing {
+	t.Helper()
+	tracing, err := telemetry.NewTracing(context.Background(), telemetry.TracingConfig{ServiceName: "httpx-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tracing
 }
 
 func TestServerValidatesConfig(t *testing.T) {

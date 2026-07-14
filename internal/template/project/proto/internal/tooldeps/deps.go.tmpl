@@ -1,0 +1,10 @@
+//go:build tools
+
+// Package tooldeps keeps generated-code dependencies in go.mod before the
+// first protobuf generation. It is excluded from normal builds.
+package tooldeps
+
+import (
+	_ "google.golang.org/grpc"
+	_ "google.golang.org/protobuf/proto"
+)

@@ -1,0 +1,29 @@
+export GOTOOLCHAIN := local
+
+.PHONY: fmt test vet build check doctor generate tools rpc-add
+
+fmt:
+	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
+
+test:
+	go test ./...
+
+vet:
+	go vet ./...
+
+build:
+	go build ./...
+
+check: test vet build
+
+doctor:
+	jgo doctor
+
+generate:
+	jgo rpc generate
+
+tools:
+	jgo tools install
+
+rpc-add:
+	@echo 'usage: jgo rpc pbapi add <RPCName> --service {{.ServiceName}}'

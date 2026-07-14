@@ -8,36 +8,11 @@ import (
 	"sync/atomic"
 
 	jerrors "github.com/eyesofblue/jgo/errors"
-	"github.com/eyesofblue/jgo/middleware/requestid"
+	"github.com/eyesofblue/jgo/logx"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
-
-const RequestIDMetadataKey = "x-request-id"
-
-// UnaryRequestID injects an incoming or generated request ID into the handler
-// context and response headers.
-func UnaryRequestID(generator requestid.Generator) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		id := requestIDFromIncomingContext(ctx, generator)
-		ctx = requestid.WithContext(ctx, id)
-		_ = grpc.SetHeader(ctx, metadata.Pairs(RequestIDMetadataKey, id))
-		return handler(ctx, req)
-	}
-}
-
-// StreamRequestID injects an incoming or generated request ID into a stream
-// context and response headers.
-func StreamRequestID(generator requestid.Generator) grpc.StreamServerInterceptor {
-	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		id := requestIDFromIncomingContext(stream.Context(), generator)
-		ctx := requestid.WithContext(stream.Context(), id)
-		_ = stream.SetHeader(metadata.Pairs(RequestIDMetadataKey, id))
-		return handler(srv, &contextServerStream{ServerStream: stream, ctx: ctx})
-	}
-}
 
 // UnaryErrorMapper converts application errors into gRPC status errors.
 func UnaryErrorMapper() grpc.UnaryServerInterceptor {
@@ -56,15 +31,14 @@ func StreamErrorMapper() grpc.StreamServerInterceptor {
 
 // UnaryRecovery converts a unary handler panic into an internal service error.
 func UnaryRecovery(logger *slog.Logger) grpc.UnaryServerInterceptor {
-	logger = defaultLogger(logger)
+	contextLogger := logx.New(defaultLogger(logger))
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (response any, err error) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				logger.ErrorContext(ctx, "grpc handler panic",
+				contextLogger.ErrorCtx(ctx, "grpc handler panic",
 					"method", info.FullMethod,
 					"panic", recovered,
 					"stack", string(debug.Stack()),
-					"request_id", requestid.FromContext(ctx),
 				)
 				err = jerrors.Wrap(fmt.Errorf("panic: %v", recovered), jerrors.CodeInternal, jerrors.MessageInternal)
 			}
@@ -75,15 +49,14 @@ func UnaryRecovery(logger *slog.Logger) grpc.UnaryServerInterceptor {
 
 // StreamRecovery converts a streaming handler panic into an internal service error.
 func StreamRecovery(logger *slog.Logger) grpc.StreamServerInterceptor {
-	logger = defaultLogger(logger)
+	contextLogger := logx.New(defaultLogger(logger))
 	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				logger.ErrorContext(stream.Context(), "grpc stream handler panic",
+				contextLogger.ErrorCtx(stream.Context(), "grpc stream handler panic",
 					"method", info.FullMethod,
 					"panic", recovered,
 					"stack", string(debug.Stack()),
-					"request_id", requestid.FromContext(stream.Context()),
 				)
 				err = jerrors.Wrap(fmt.Errorf("panic: %v", recovered), jerrors.CodeInternal, jerrors.MessageInternal)
 			}
@@ -95,7 +68,6 @@ func StreamRecovery(logger *slog.Logger) grpc.StreamServerInterceptor {
 func defaultUnaryInterceptors(logger *slog.Logger, activity *activityTracker) []grpc.UnaryServerInterceptor {
 	return []grpc.UnaryServerInterceptor{
 		activity.unaryInterceptor(),
-		UnaryRequestID(nil),
 		UnaryErrorMapper(),
 		UnaryRecovery(logger),
 	}
@@ -104,21 +76,9 @@ func defaultUnaryInterceptors(logger *slog.Logger, activity *activityTracker) []
 func defaultStreamInterceptors(logger *slog.Logger, activity *activityTracker) []grpc.StreamServerInterceptor {
 	return []grpc.StreamServerInterceptor{
 		activity.streamInterceptor(),
-		StreamRequestID(nil),
 		StreamErrorMapper(),
 		StreamRecovery(logger),
 	}
-}
-
-func requestIDFromIncomingContext(ctx context.Context, generator requestid.Generator) string {
-	var value string
-	if incoming, ok := metadata.FromIncomingContext(ctx); ok {
-		values := incoming.Get(RequestIDMetadataKey)
-		if len(values) > 0 {
-			value = values[0]
-		}
-	}
-	return requestid.Ensure(value, generator)
 }
 
 func defaultLogger(logger *slog.Logger) *slog.Logger {
@@ -127,13 +87,6 @@ func defaultLogger(logger *slog.Logger) *slog.Logger {
 	}
 	return logger
 }
-
-type contextServerStream struct {
-	grpc.ServerStream
-	ctx context.Context
-}
-
-func (s *contextServerStream) Context() context.Context { return s.ctx }
 
 type activityTracker struct {
 	draining atomic.Bool

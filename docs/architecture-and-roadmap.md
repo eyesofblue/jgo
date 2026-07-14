@@ -1,6 +1,6 @@
 # JGO 架构设计与实施路线
 
-> 状态：`v0.2.0` 已于 2026-07-14 发布，P0/P1 已完成
+> 状态：`v0.2.0` 已于 2026-07-14 发布，P2 已完成并形成 `v0.3.0` 发布候选
 > Go module：`github.com/eyesofblue/jgo`  
 > 最低 Go 版本：`1.24`
 > License：`Apache-2.0`  
@@ -39,13 +39,14 @@ JGO 是一个可独立使用的 Go 服务框架和脚手架，用于快速创建
 
 ### 2.1 项目类型
 
-JGO 支持三种项目类型：
+JGO 支持四种项目类型：
 
 | 类型 | 说明 | 协议文件 |
 | --- | --- | --- |
 | `web` | 仅提供 HTTP API | OpenAPI |
 | `grpc` | 仅提供 gRPC API | protobuf |
 | `mixed` | 同时提供 HTTP 和 gRPC，共用业务层 | OpenAPI + protobuf |
+| `proto` | 独立、可版本化的公共 protobuf Go module，不包含服务进程 | protobuf |
 
 框架底层支持同时运行多个 Server，但脚手架只根据项目类型生成所需内容。
 
@@ -152,14 +153,14 @@ protobuf 是 gRPC 接口的唯一契约来源。
 阶段 6 锁定的生成工具版本：
 
 - Buf `v1.46.0`：当前已完成真实生成回归的锁定版本。
-- `protoc-gen-go v1.36.7`：与框架 protobuf runtime 保持一致。
+- `protoc-gen-go v1.36.7`：与框架使用的 protobuf runtime 兼容，并已通过真实生成回归。
 - `protoc-gen-go-grpc v1.5.1`：当前已完成真实生成回归的锁定版本。
 - `github.com/bufbuild/protocompile v0.14.1`：用于 proto AST 解析、语法校验和安全定位，不依赖正则或特殊注释锚点修改契约。
 
 gRPC 运行时已锁定：
 
-- `google.golang.org/grpc v1.71.3`：当前运行时锁定版本。
-- `google.golang.org/protobuf v1.36.7`：当前 protobuf runtime 锁定版本。
+- `google.golang.org/grpc v1.79.1`：当前运行时锁定版本。
+- `google.golang.org/protobuf v1.36.11`：当前 protobuf runtime 锁定版本。
 - 依赖升级与 Go 最低版本提升分开实施，避免生成差异和平台修复同时引入。
 
 ## 3. 现有代码调研结论
@@ -214,14 +215,15 @@ jgo/
 │   └── grpcx/                   # gRPC Server 组件
 ├── middleware/
 │   ├── recovery/
-│   ├── requestid/
+│   ├── traceid/
 │   ├── accesslog/
 │   └── timeout/
+├── telemetry/                   # OpenTelemetry 生命周期与标准传播器
+├── logx/                        # slog 结构化 context 日志
 ├── config/                      # 本地文件和环境变量配置
 ├── errors/                      # 统一业务错误
 ├── response/                    # HTTP 统一响应
 ├── health/                      # liveness/readiness
-├── log/                         # 基于 slog 的日志能力
 ├── extension/                   # 外部基础设施扩展接口
 ├── generator/
 │   ├── project/
@@ -387,7 +389,7 @@ jgo api add ListUsers \
 ### 7.3 gRPC API
 
 ```bash
-jgo rpc add GetUser --service UserService
+jgo rpc pbapi add GetUser --service UserService
 jgo rpc generate
 ```
 
@@ -443,7 +445,7 @@ HTTP 与 gRPC 调用统一支持：
 - 读取、写入、读取 Header 和空闲超时。
 - 请求体大小限制。
 - panic recovery。
-- request ID。
+- trace ID。
 - access log。
 - 统一 JSON 错误响应。
 - `/healthz` 存活检查。
@@ -472,13 +474,13 @@ HTTP 与 gRPC 调用统一支持：
 - `code` 是整数业务码，成功固定为 `0`，失败为非零。
 - HTTP status 和业务错误码分开管理，业务码不复用 HTTP status。
 - `data` 可以是对象、数组或 `null`；错误响应固定为 `null`。
-- request ID 通过 HTTP header 传递，不增加到标准响应 body。
+- trace ID 通过 HTTP header 传递，不增加到标准响应 body。
 
 ### 8.2 gRPC
 
 - 优雅停机和强制停机兜底。
 - recovery interceptor。
-- request ID/metadata 传递。
+- trace ID/metadata 传递。
 - 业务错误写入标准 Response `code/msg`；无法形成业务 Response 的系统错误转换为 gRPC status。
 - 开发环境可开启 Reflection。
 
@@ -573,7 +575,7 @@ go vet ./...
 
 1. 实现 `server/httpx.Server`，使其满足 `app.Component`。
 2. 提供安全的默认 timeout。
-3. 实现 recovery、request ID、access log 和 timeout 中间件。
+3. 实现 recovery、trace ID、access log 和 timeout 中间件。
 4. 实现统一错误模型和 JSON response。
 5. 实现 `/healthz` 和 `/readyz`。
 6. 使用 `httptest` 完成端到端测试。
@@ -593,7 +595,7 @@ go vet ./...
 1. 实现 `server/grpcx.Server`，使其满足 `app.Component`。
 2. 实现 service 注册函数。
 3. 实现 unary recovery interceptor。
-4. 实现 request ID/metadata 传递。
+4. 实现 trace ID/metadata 传递。
 5. 实现 JGO 业务 error 到 Response 的转换，以及系统 error 到 gRPC status 的转换。
 6. 支持可配置的 Reflection。
 7. 实现 `GracefulStop` 超时后 `Stop` 的兜底策略。
@@ -659,7 +661,7 @@ go build ./...
 
 任务：
 
-1. 实现 `jgo rpc add`。
+1. 实现 `jgo rpc pbservice add` 与 `jgo rpc pbapi add`。
 2. 实现 proto 文件的结构化校验与更新。
 3. 接入 Buf lint/generate。
 4. 生成 transport 骨架，不覆盖 service 实现。
@@ -789,7 +791,7 @@ go build ./...
 - 实现 `server/httpx.Server`，并使其满足 `app.Component`。
 - 实现默认 HTTP 超时：5 秒 ReadHeader、15 秒 Read、30 秒 Write、60 秒 Idle、30 秒 handler timeout。
 - 实现 `middleware.Chain` 和可重用的 response writer 状态记录器。
-- 实现 request ID 传递与生成，并拒绝不安全的外部 request ID。
+- 实现 trace ID 传递与生成，并拒绝不安全的外部 trace ID。
 - 实现基于 `log/slog` 的结构化 access log。
 - 实现 handler timeout，使用缓冲响应防止超时 handler 继续写客户端。
 - 实现 panic recovery；响应未提交时返回统一 JSON 错误，已提交时不拼接二次响应。
@@ -797,7 +799,7 @@ go build ./...
 - 实现 `response.Envelope`、成功响应和统一错误响应。
 - 实现 `health.Probe`、`GET /healthz` 和 `GET /readyz`。
 - readiness 默认为 false，支持进程就绪门和多个依赖检查。
-- 默认中间件顺序为 request ID → access log → timeout → recovery → application handler。
+- 默认中间件顺序为 trace ID → access log → timeout → recovery → application handler。
 - 完成 `httpx.Server` 与 `app.App` 的真实 TCP 端到端测试。
 
 验证结果：
@@ -815,7 +817,7 @@ go build ./...
 - 实现 `server/grpcx.Server`，并使其满足 `app.Component`。
 - 实现生成服务的 `RegisterFunc` 注册机制。
 - 实现可配置的 gRPC Reflection。
-- 实现 unary 和 stream request ID interceptor，支持 metadata 传入、context 注入和 response header 回传。
+- 实现 unary 和 stream trace ID interceptor，支持 metadata 传入、context 注入和 response header 回传。
 - 实现 unary 和 stream panic recovery interceptor，使用 `slog` 记录堆栈。
 - 实现 unary 和 stream 错误转换 interceptor。
 - 实现 HTTP status 到 gRPC code 的稳定映射，未知错误统一转换为 `codes.Internal`。
@@ -823,7 +825,7 @@ go build ./...
 - 保留已有 gRPC status error，并正确映射 `context.Canceled` 和 `context.DeadlineExceeded`。
 - 实现活动 unary/stream RPC 跟踪和 draining 状态，停机后拒绝新 RPC。
 - 优雅停机先等待活动 RPC 归零；超时后直接强制 Stop，避免 gRPC-Go v1.71.3 中并发 `GracefulStop`/`Stop` 的内部锁竞争。
-- 完成 bufconn 端到端测试，覆盖 request ID、业务错误、panic recovery 和 Reflection。
+- 完成 bufconn 端到端测试，覆盖 trace ID、业务错误、panic recovery 和 Reflection。
 - 完成 HTTP + gRPC mixed 应用生命周期测试。
 
 验证结果：
@@ -884,7 +886,7 @@ go run ./cmd/jgo new demo-web \
 - JGO 生成 `internal/transport/http/routes.gen.go`，负责协议解析、service 调用和统一响应。
 - 每个 operation 首次创建独立 service 实现文件，后续 `api generate` 不覆盖开发者修改。
 - HTTP body 固定为 `code`、`msg`、`data` 三个字段；成功业务码固定为 `0`，错误时 `data` 固定为 `null`。
-- HTTP status 与整数业务错误码独立管理；request ID 继续通过 HTTP header 传递。
+- HTTP status 与整数业务错误码独立管理；trace ID 继续通过 HTTP header 传递。
 - 更新 web/mixed 项目模板，增加 `api/http/model/`、生成路由占位文件和固定的 OpenAPI runtime 依赖。
 
 使用示例：
@@ -922,8 +924,8 @@ jgo api generate
 
 已完成：
 
-- 实现 `jgo rpc add <rpc-name> --service <service-name>`，并提供可选 `--file` 处理多文件同名 service。
-- 阶段 6 初版的 `rpc add` 创建两个空 message；v0.2.0 P1 已将 response 调整为自动包含标准 `code/msg` 字段。
+- 实现 `jgo rpc pbapi add <rpc-name> --service <service-name>`，并提供可选 `--file` 处理多文件同名 service；该命令在 P2 阶段 4 取代早期的 `rpc add`。
+- `rpc pbapi add` 创建空 request message，并为 response 自动包含标准 `code/msg` 字段。
 - 使用 protocompile AST 解析 proto，精确定位 service 结束位置；不使用正则或特殊注释锚点。
 - 在写入前检查 proto 语法、service 唯一性、RPC 重名、message 冲突、文件边界和符号链接，并在同目录原子替换契约。
 - 实现 `jgo rpc generate`，依次校验锁定工具版本、执行 `buf lint` 和 `buf generate`。
@@ -936,7 +938,7 @@ jgo api generate
 
 ```bash
 make tools
-jgo rpc add GetUser --service GreeterService
+jgo rpc pbapi add GetUser --service GreeterService
 
 # 编辑 api/proto/<package>/v1/service.proto 中的字段后：
 jgo rpc generate
@@ -1049,11 +1051,11 @@ jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 
 已完成：
 
-- 初始 Echo 和 `jgo rpc add` 创建的每个 response 固定声明非 optional 的 `int32 code = 1`、`string msg = 2`，用户业务字段从编号 `3` 开始。
+- 初始 Echo 和 `jgo rpc pbapi add` 创建的每个 response 固定声明非 optional 的 `int32 code = 1`、`string msg = 2`，用户业务字段从编号 `3` 开始。
 - `code = 0` 表示业务成功；gRPC status 继续表达传输或系统错误，不与业务码混用。
 - `jgo call grpc` 使用 `protojson.EmitDefaultValues`，普通无 presence 字段的零值会显示，未设置的 optional/message 字段仍然省略。
 - `jgo rpc generate`、统一 `jgo generate` 和 `jgo doctor` 强制校验所有 response；非标准契约直接失败，不保留存量兼容分支。
-- `rpc add` 的结果提示明确指出保留字段和下一步命令。
+- `rpc pbapi add` 的结果提示明确指出保留字段和下一步命令。
 - 生成项目 README 只维护稳定工作流，不复制容易过期的接口清单；OpenAPI/proto 是协议真源，`jgo list` 展示当前接口。
 - 中英文 README、命令参考、示例和变更记录同步上述约定。
 - 生成 unary transport 将显式 `jgo/errors.Error` 转换为 gRPC `OK` 的 Response `code/msg`；panic、未知错误、取消和超时继续使用非 `OK` status。
@@ -1065,3 +1067,113 @@ jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 - 发布提交完成全仓 test、race、vet、格式化、CLI 构建及 web/grpc/mixed 真实生成验收。
 - 创建 annotated tag `v0.2.0`，由 GitHub Actions 生成 Linux/macOS 的 amd64/arm64 归档和 SHA-256 校验文件。
 - README、快速入门、依赖说明、命令参考、实施知识库和 CHANGELOG 已同步到 `v0.2.0`。
+
+### 2026-07-14：P2 阶段 1 OpenTelemetry 与 context 日志
+
+设计决定：
+
+- 彻底移除公开的 `middleware/requestid`、`X-Request-ID` 和 `request_id` 日志字段，不保留兼容别名。
+- HTTP 与 gRPC 统一使用 OpenTelemetry 和 W3C `traceparent`，HTTP 响应额外返回 `X-Trace-ID` 便于人工排查。
+- 生成项目默认创建并透传 Trace Context；OTLP exporter 默认关闭，因此运行时不依赖 Collector 或任何私有基础设施。
+- exporter 开启时默认采样比例为 `0.1`；endpoint、TLS/insecure 和采样比例由 YAML 配置。
+- tracer provider 是 `app.Component`。构造时完成全局 provider/propagator 安装，确保并发启动的 HTTP/gRPC Server 可以立即使用；注册在 Server 之前，反向停机时最后 flush。
+- OpenTelemetry 固定为兼容 Go 1.24 的核心 `v1.41.0`、HTTP/gRPC instrumentation `v0.66.0`。更新组合已经要求 Go 1.25，不允许触发隐式工具链升级。
+- 新增 `logx.DebugCtx`、`InfoCtx`、`WarnCtx`、`ErrorCtx` 及注入式 `Logger`，底层继续使用 `slog`，自动附加 `trace_id` 和 `span_id`。
+- 日志只接受结构化 key/value 参数，不增加 printf 风格接口。
+- 生成的 unary gRPC transport 在业务错误仍返回 gRPC `OK` 的同时，为当前 span 增加 `jgo.business_code` 和 `jgo.business_message`，避免标准 instrumentation 把业务失败完全视为无差别成功。
+
+验证范围：
+
+- telemetry 配置校验、无 exporter 时的有效非 recording span、幂等 Shutdown。
+- HTTP `traceparent` 提取、`X-Trace-ID` 响应和 access/recovery 日志关联。
+- gRPC `otelgrpc` client/server 端到端 Trace ID 透传。
+- web、grpc、mixed 三类生成项目的配置、测试、构建与生命周期。
+
+### 2026-07-14：P2 阶段 2 gRPC 客户端运行时
+
+设计决定：
+
+- 新增 `client/grpcx.Manager`，以 `app.Component` 管理多个具名、可复用的 `grpc.ClientConn`。
+- 使用 `grpc.NewClient` 延迟建连。远端不可用不阻止应用启动，真正调用时返回 `Unavailable`；空地址、负数超时和无效 TLS CA 等本地配置错误在构造阶段失败。
+- unary RPC 默认超时为 3 秒，`rpc_client.<name>.timeout` 可以覆盖；调用 context 已经存在 deadline 时，以调用方 deadline 和客户端 timeout 中更早到期的一个为准。
+- 默认使用明文 HTTP/2，可按客户端开启 TLS、指定 server name，并在系统证书池上追加 CA 文件。
+- 关闭配置式 gRPC retry，不增加 JGO 业务重试；grpc-go 仍负责连接断开后的正常重连。
+- outbound gRPC 使用官方 `otelgrpc` client instrumentation 透传 W3C Trace Context；仅传输失败写结构化错误日志，不记录请求/响应正文。
+- 下游依赖状态不接入 `/healthz`，健康检查继续只表示当前进程存活。
+- 生成项目配置增加 `rpc_client` map；第一版不提供环境变量逐项覆盖，YAML 是客户端依赖配置入口。
+
+验证范围：
+
+- bufconn 成功调用和 Trace ID 透传。
+- 默认/配置超时，以及调用方 deadline 与客户端 timeout 的最早期限优先。
+- 服务端错误只调用一次，不发生配置式业务 retry。
+- 不可用远端不阻止启动且实际调用返回 `Unavailable`。
+- 配置、未知客户端、关闭状态和 TLS CA 校验。
+
+### 2026-07-14：P2 阶段 3 公共 protobuf 协议项目
+
+设计决定：
+
+- `jgo new <name> --module <module> --type proto` 创建独立公共协议仓库；项目名和 module 完全由用户决定，`company-api` 只是示例。
+- proto 项目只包含 `.proto`、Buf 配置、生成依赖和公共 `gen/pb` Go 包，不生成 `cmd/server`、运行配置、业务层或 transport。
+- proto 项目的 `go.mod` 不依赖 JGO runtime，只依赖生成代码需要的 gRPC/protobuf runtime。
+- `jgo rpc pbservice add` 用于在同一协议仓库增加 Service；`jgo rpc pbapi add` 按相同规范创建 RPC；`jgo rpc generate` 自动识别协议项目，仅执行工具检查、Buf lint、Response 契约校验和公共 Go 包生成。
+- `.proto` 与 `gen/pb` 都属于公共 module 的发布内容，必须提交并通过 Go module tag 提供给服务端和调用方。
+- `jgo generate`、`jgo doctor`、`jgo list` 支持 proto 项目；`jgo run` 和面向 server binary 的 `jgo build` 返回明确的不适用错误。
+- 服务项目布局只要出现一部分关键文件就视为损坏，不会静默退化成 proto 模式。
+
+验证范围：
+
+- proto 项目树、派生 service/package 名、无 JGO 依赖和无 server 文件。
+- 服务项目继续生成业务桩及 transport；proto 项目只生成 `service.pb.go`、`service_grpc.pb.go`。
+- web、grpc、mixed、proto 四类项目真实创建、重复生成幂等、doctor、test 和 build。
+
+### 2026-07-14：P2 阶段 4 protobuf 命令与服务接入
+
+设计决定：
+
+- 原 `jgo rpc add` 彻底替换为 `jgo rpc pbapi add`，不保留兼容入口；新增 `jgo rpc pbservice add`，用于在同一协议仓库增加 protobuf Service。
+- proto 项目继续保留默认的 `<ProjectName>Service.Echo`；后续 Service 使用 `pbservice add`，不重复执行 `jgo new`。
+- `rpc server add <Service> --module <module>@<version>` 用于 gRPC/mixed 服务端；生成公共协议 adapter、注册代码和缺失业务方法。
+- `rpc client add <Service> --module <module>@<version>` 可用于 web/grpc/mixed 调用方；生成具名 `rpc_client` 配置、连接生命周期和类型安全 protobuf client 注入。
+- module tag 仅选择公共协议仓库发布版本，不推断 protobuf API `v1/v2`。JGO 扫描 module 内全部 `gen/pb` package；Service 唯一时自动选择，同名跨版本时要求完整 `--package`。
+- 客户端通过 `Service.RPC.<Name>` 直接持有生成的 protobuf client interface，不通过反射调用。
+- `rpc client add --name` 同时决定配置 key 和注入字段，是稳定代码标识；首版不提供 rename。地址、超时和 TLS 属于运行配置，直接修改 YAML。
+- server/client add 自动写入 module require 并执行 `go mod tidy`；本地开发可以使用标准 Go `replace` 指向协议仓库。
+- 绑定清单保存在 `.jgo/rpc.json`，用于稳定记录 server/client 来源、版本、package 和方法，不依赖运行时服务发现。
+
+验证范围：
+
+- `pbservice add` 重复定义、多文件选择和 proto 语法安全。
+- 旧 `rpc add` 入口不可用，所有模板和现行手册改用 `pbapi add`。
+- 唯一 Service 自动发现、同名跨版本歧义和 `--package` 选择。
+- 公共 proto module、gRPC 服务端和 web 调用方三项目生成、依赖整理、测试与构建。
+
+### 2026-07-14：P2 阶段 5 三项目运行验收与发布准备
+
+已完成：
+
+- `scripts/verify-generation.sh` 在原有 web、grpc、mixed、proto 生成、幂等、测试和构建检查之后，继续组装并启动三个彼此独立的项目：公共 proto module、gRPC 服务端和 Web 调用方。
+- 使用固定 W3C `traceparent` 发起 Web → gRPC 调用，验证 HTTP `X-Trace-ID`、HTTP response 和 gRPC 服务端结构化日志中的 trace_id 一致。
+- 使用耗时 5 秒的 RPC 验证默认 3 秒客户端 timeout。验收发现 HTTP handler context 自带较长 deadline 时会跳过客户端 timeout，现已修正为两者取更早期限，并增加单元回归测试。
+- 停止 gRPC 服务后，Web 调用方的 `/healthz` 继续返回 200；下一次业务调用返回系统错误，结构化客户端日志记录 gRPC `Unavailable`。
+- 运行验收失败时自动输出服务端、调用方、HTTP header/body 等诊断信息，成功或失败都会停止子进程并清理临时项目。
+
+验证结论：
+
+- 公共协议发布物能够被服务端和调用方分别以 Go module 依赖接入。
+- 延迟建连、类型安全 client 注入、Trace Context 透传、最早 deadline、无业务重试和进程级健康检查的组合行为符合 P2 设计。
+- P2 阶段 1 至 5 的实现和文档已形成发布候选；创建版本、tag 和 GitHub Release 仍需维护者明确指定版本并授权。
+
+### 2026-07-14：P2 阶段 6 发布前代码审查
+
+审查修正：
+
+- `rpc server add` 和 `rpc client add` 改为事务式文件更新；生成、配置或 `go mod tidy` 失败时恢复 `go.mod`、`go.sum`、生成代码、业务桩、YAML 和 `.jgo/rpc.json`，避免留下半完成项目。
+- 同一 protobuf package 中多个 Service 的服务端接入只生成一次 import；同一 Service 以不同 `--name` 接入多个目标实例时也只生成一次 import，保证生成代码可编译。
+- 客户端名称增加生成 Go 字段后的冲突检查，例如 `user_primary` 与 `userPrimary` 不允许同时生成同名字段。
+- `logx` 修正混合使用 `slog.Attr` 和 key/value 参数时的显式 `trace_id` 检测，避免重复关联字段。
+- 增加 tidy 失败回滚、protobuf import 去重、客户端字段冲突和混合日志参数回归测试。
+- 完成敏感信息扫描与 `go mod verify`；命中的 token/password 文本均为验证错误脱敏和 Header 透传的固定测试数据，不包含真实凭据、邮箱或本机绝对路径。
+
+下一版本号已确定为 `v0.3.0`；生成项目默认依赖、安装命令和发布文档已统一指向该版本。创建 tag 和 GitHub Release 仍需单独执行。

@@ -8,8 +8,8 @@ require gopkg.in/yaml.v3 v3.0.1
 require github.com/oapi-codegen/runtime v1.1.1
 {{end}}
 {{if .HasGRPC}}
-require google.golang.org/grpc v1.71.3
-require google.golang.org/protobuf v1.36.7
+require google.golang.org/grpc v1.79.1
+require google.golang.org/protobuf v1.36.11
 {{end}}
 {{if .JGOReplace}}
 replace github.com/eyesofblue/jgo => {{printf "%q" .JGOReplace}}

@@ -3,3 +3,12 @@ service:
   http_address: ":8080"
   grpc_address: ":9090"
   shutdown_timeout: 10s
+telemetry:
+  tracing:
+    enabled: true
+    sample_ratio: 0.1
+    exporter:
+      enabled: false
+      endpoint: "127.0.0.1:4317"
+      insecure: true
+rpc_client: {}

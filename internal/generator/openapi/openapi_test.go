@@ -196,7 +196,7 @@ type envelope struct {
 }
 
 func TestGeneratedRoutes(t *testing.T) {
-	handler := NewHandler(service.New())
+	handler := NewHandler(service.New(nil))
 
 	get := httptest.NewRecorder()
 	handler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/get_user?uid=42", nil))

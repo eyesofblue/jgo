@@ -8,8 +8,8 @@ import (
 	"runtime/debug"
 
 	jerrors "github.com/eyesofblue/jgo/errors"
+	"github.com/eyesofblue/jgo/logx"
 	"github.com/eyesofblue/jgo/middleware"
-	"github.com/eyesofblue/jgo/middleware/requestid"
 	"github.com/eyesofblue/jgo/response"
 )
 
@@ -18,15 +18,15 @@ func New(logger *slog.Logger) middleware.Middleware {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	contextLogger := logx.New(logger)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			wrapped := middleware.WrapResponseWriter(writer)
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					logger.ErrorContext(request.Context(), "http handler panic",
+					contextLogger.ErrorCtx(request.Context(), "http handler panic",
 						"panic", recovered,
 						"stack", string(debug.Stack()),
-						"request_id", requestid.FromContext(request.Context()),
 					)
 					if wrapped.Written() {
 						return

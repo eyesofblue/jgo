@@ -8,6 +8,7 @@ configs/local.yaml
 go.mod
 internal/config/config.go
 internal/config/config_test.go
+internal/rpcclient/clients.gen.go
 internal/service/service.go
 internal/tooldeps/deps.go
 internal/transport/http/routes.gen.go

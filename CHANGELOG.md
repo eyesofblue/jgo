@@ -2,6 +2,34 @@
 
 All notable JGO changes are documented here. JGO follows Semantic Versioning.
 
+## Unreleased
+
+No changes yet.
+
+## v0.3.0 - 2026-07-14
+
+### Changed
+
+- Replaced the public `middleware/requestid` API and `X-Request-ID` convention with OpenTelemetry Trace Context, `middleware/traceid`, W3C `traceparent`, and the `X-Trace-ID` response header. This is a pre-1.0 breaking change.
+- HTTP and gRPC servers now use official OpenTelemetry instrumentation. Trace contexts are active by default in generated projects while OTLP export remains disabled unless configured.
+- Generated applications own the tracer provider lifecycle and flush it after servers stop.
+- Generated configuration now supports named outbound gRPC dependencies under `rpc_client`, including per-client timeout and TLS settings.
+- Replaced `jgo rpc add` with the explicit `jgo rpc pbapi add` command without a compatibility alias.
+- RPC server/client binding updates are transactional: generation or `go mod tidy` failures restore `go.mod`, `go.sum`, generated code, YAML, stubs, and the binding manifest.
+
+### Added
+
+- Structured `logx.DebugCtx`, `InfoCtx`, `WarnCtx`, and `ErrorCtx` APIs with automatic `trace_id` and `span_id` fields.
+- Optional OTLP/gRPC exporter configuration with sampling, endpoint, and transport-security settings.
+- `client/grpcx` application component for lazy named connections, default 3-second unary timeouts, earliest-deadline precedence, TLS, trace propagation, structured transport-error logging, and no configured business-call retries.
+- Standalone `proto` project scaffolding for shared, versioned protobuf modules without a JGO runtime or server process.
+- Protocol-aware protobuf generation that writes public `gen/pb` packages without service stubs or transport adapters in proto projects.
+- `jgo rpc pbservice add` for adding additional protobuf Service definitions to an existing contract repository.
+- `jgo rpc server add` for discovering and implementing a Service from a versioned shared protobuf module.
+- `jgo rpc client add` for generated `rpc_client` configuration, managed connections, and direct typed protobuf client injection into business services.
+- Runtime E2E coverage that starts a generated shared proto module, gRPC server, and Web caller and verifies trace propagation, timeout, `Unavailable`, and process-only health behavior.
+- Deduplicated generated protobuf imports for multiple Services from one package and multiple named instances of the same Service.
+
 ## v0.2.0 - 2026-07-14
 
 ### Changed

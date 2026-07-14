@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	DefaultJGOVersion = "v0.2.0"
+	DefaultJGOVersion = "v0.3.0"
 	MinimumGoVersion  = "1.24.0"
 )
 
@@ -20,6 +20,7 @@ const (
 	TypeWeb   Type = "web"
 	TypeGRPC  Type = "grpc"
 	TypeMixed Type = "mixed"
+	TypeProto Type = "proto"
 )
 
 // Config describes one generated project.
@@ -57,7 +58,7 @@ func (config *Config) normalizeAndValidate() error {
 		return fmt.Errorf("%w: %q", ErrInvalidModule, config.Module)
 	}
 	switch config.Type {
-	case TypeWeb, TypeGRPC, TypeMixed:
+	case TypeWeb, TypeGRPC, TypeMixed, TypeProto:
 	default:
 		return fmt.Errorf("%w: %q", ErrInvalidType, config.Type)
 	}
@@ -181,5 +182,7 @@ func (config Config) HasWeb() bool {
 }
 
 func (config Config) HasGRPC() bool {
-	return config.Type == TypeGRPC || config.Type == TypeMixed
+	return config.Type == TypeGRPC || config.Type == TypeMixed || config.Type == TypeProto
 }
+
+func (config Config) IsProto() bool { return config.Type == TypeProto }

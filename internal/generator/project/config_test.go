@@ -83,8 +83,8 @@ func TestConfigNormalizesDefaults(t *testing.T) {
 	if config.JGOVersion != DefaultJGOVersion {
 		t.Fatalf("JGOVersion = %q, want %q", config.JGOVersion, DefaultJGOVersion)
 	}
-	if DefaultJGOVersion != "v0.2.0" {
-		t.Fatalf("DefaultJGOVersion = %q, want v0.2.0", DefaultJGOVersion)
+	if DefaultJGOVersion != "v0.3.0" {
+		t.Fatalf("DefaultJGOVersion = %q, want v0.3.0", DefaultJGOVersion)
 	}
 	if config.GoVersion != MinimumGoVersion {
 		t.Fatalf("GoVersion = %q, want %q", config.GoVersion, MinimumGoVersion)

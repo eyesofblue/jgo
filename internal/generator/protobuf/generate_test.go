@@ -78,6 +78,8 @@ func TestGenerateRunsBufAndCreatesOnlyMissingServiceStubs(t *testing.T) {
 		"type userServiceServer struct",
 		"application.UserServiceGetUser(ctx, request)",
 		"stderrors.As(err, &businessError)",
+		`attribute.Int64("jgo.business_code", int64(businessError.Code()))`,
+		`attribute.String("jgo.business_message", businessError.Message())`,
 		"&demov1.GetUserResponse{Code: int32(businessError.Code()), Msg: businessError.Message()}",
 		"RegisterUserServiceServer",
 	} {
@@ -109,6 +111,53 @@ func TestGenerateRejectsToolVersionMismatchBeforeBufLint(t *testing.T) {
 	err := generate(context.Background(), root, &runner)
 	if err == nil || !strings.Contains(err.Error(), "version mismatch") {
 		t.Fatalf("generate() error = %v", err)
+	}
+}
+
+func TestGenerateProtocolProjectOnlyWritesPublicPackages(t *testing.T) {
+	root := generatedProjectRoot(t)
+	for _, relative := range []string{
+		"cmd/server/main.go",
+		"internal/service/service.go",
+		"internal/transport/grpc/register.go",
+	} {
+		if err := os.Remove(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := generateWithResult(context.Background(), root, &fakeRunner{})
+	if err != nil {
+		t.Fatalf("generate() error = %v", err)
+	}
+	if !result.ProtocolOnly || len(result.CreatedStubs) != 0 {
+		t.Fatalf("GenerateResult = %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(root, "gen", "pb", "demo", "v1", "service_grpc.pb.go")); err != nil {
+		t.Fatalf("generated public package: %v", err)
+	}
+	for _, relative := range []string{
+		"internal/service/user_service_get_user.go",
+		"internal/transport/grpc/register.gen.go",
+	} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); !os.IsNotExist(err) {
+			t.Fatalf("protocol project unexpectedly generated %s: %v", relative, err)
+		}
+	}
+}
+
+func TestGenerateRejectsIncompleteServiceLayoutBeforeRunningTools(t *testing.T) {
+	root := generatedProjectRoot(t)
+	if err := os.Remove(filepath.Join(root, "internal", "transport", "grpc", "register.go")); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{}
+	_, err := generateWithResult(context.Background(), root, runner)
+	if err == nil || !strings.Contains(err.Error(), "incomplete service project layout") {
+		t.Fatalf("generate() error = %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("tools ran before layout validation: %v", runner.calls)
 	}
 }
 
@@ -162,7 +211,9 @@ message GetUserResponse {
   string msg = 2;
 }
 `,
-		"internal/service/service.go": "package service\n\ntype Service struct{}\n\n// GetUser simulates an HTTP operation with the same name as the RPC.\nfunc (s *Service) GetUser() {}\n",
+		"internal/service/service.go":         "package service\n\ntype Service struct{}\n\n// GetUser simulates an HTTP operation with the same name as the RPC.\nfunc (s *Service) GetUser() {}\n",
+		"cmd/server/main.go":                  "package main\nfunc main() {}\n",
+		"internal/transport/grpc/register.go": "package grpctransport\n",
 	}
 	for relative, contents := range files {
 		path := filepath.Join(root, filepath.FromSlash(relative))

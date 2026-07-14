@@ -9,7 +9,7 @@ import (
 
 func TestLoadPrecedence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	contents := []byte("service:\n  name: yaml\n  http_address: ':8000'\n  grpc_address: ':9000'\n  shutdown_timeout: 5s\n")
+	contents := []byte("service:\n  name: yaml\n  http_address: ':8000'\n  grpc_address: ':9000'\n  shutdown_timeout: 5s\ntelemetry:\n  tracing:\n    enabled: true\n    sample_ratio: 0.5\n    exporter:\n      enabled: false\nrpc_client:\n  user:\n    address: 'dns:///user:9090'\n    timeout: 2s\n    tls:\n      enabled: true\n      server_name: user.internal\n      ca_file: configs/ca.pem\n")
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -24,5 +24,30 @@ func TestLoadPrecedence(t *testing.T) {
 	}
 	if config.Service.ShutdownTimeout.Duration != 5*time.Second {
 		t.Fatalf("shutdown timeout = %s", config.Service.ShutdownTimeout.Duration)
+	}
+	if !config.Telemetry.Tracing.Enabled || config.Telemetry.Tracing.SampleRatio != 0.5 {
+		t.Fatalf("unexpected tracing config: %+v", config.Telemetry.Tracing)
+	}
+	client := config.RPCClient["user"]
+	if client.Address != "dns:///user:9090" || client.Timeout.Duration != 2*time.Second {
+		t.Fatalf("unexpected rpc client config: %+v", client)
+	}
+	if !client.TLS.Enabled || client.TLS.ServerName != "user.internal" || client.TLS.CAFile != "configs/ca.pem" {
+		t.Fatalf("unexpected rpc client TLS config: %+v", client.TLS)
+	}
+}
+
+func TestValidateRPCClient(t *testing.T) {
+	config := Config{
+		Service: Service{
+			Name:            "test",
+			HTTPAddress:     ":8080",
+			GRPCAddress:     ":9090",
+			ShutdownTimeout: Duration{Duration: time.Second},
+		},
+		RPCClient: map[string]RPCClient{"user": {}},
+	}
+	if err := config.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want missing rpc client address")
 	}
 }

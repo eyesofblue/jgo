@@ -9,7 +9,9 @@ configs/local.yaml
 go.mod
 internal/config/config.go
 internal/config/config_test.go
+internal/rpcclient/clients.gen.go
 internal/service/service.go
 internal/tooldeps/deps.go
+internal/transport/grpc/external.gen.go
 internal/transport/grpc/register.gen.go
 internal/transport/grpc/register.go

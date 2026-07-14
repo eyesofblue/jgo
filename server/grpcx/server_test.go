@@ -12,12 +12,14 @@ import (
 
 	"github.com/eyesofblue/jgo/app"
 	jerrors "github.com/eyesofblue/jgo/errors"
-	"github.com/eyesofblue/jgo/middleware/requestid"
+	"github.com/eyesofblue/jgo/middleware/traceid"
 	"github.com/eyesofblue/jgo/server/httpx"
+	"github.com/eyesofblue/jgo/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 	reflectionpb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
@@ -39,8 +41,8 @@ type testServiceImpl struct {
 }
 
 func (s *testServiceImpl) Echo(ctx context.Context, request *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
-	if request.Value == "request-id" {
-		return wrapperspb.String(requestid.FromContext(ctx)), nil
+	if request.Value == "trace-id" {
+		return wrapperspb.String(traceid.FromContext(ctx)), nil
 	}
 	return request, nil
 }
@@ -68,14 +70,13 @@ func TestServerWithBufconn(t *testing.T) {
 	connection := dialBufconn(t, listener)
 	defer connection.Close()
 
-	var header metadata.MD
 	response := new(wrapperspb.StringValue)
-	callCtx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(RequestIDMetadataKey, "client-42"))
-	if err := connection.Invoke(callCtx, "/test.Service/Echo", wrapperspb.String("request-id"), response, grpc.Header(&header)); err != nil {
+	callCtx := trace.ContextWithSpanContext(context.Background(), fixedSpanContext(t))
+	if err := connection.Invoke(callCtx, "/test.Service/Echo", wrapperspb.String("trace-id"), response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Value != "client-42" || header.Get(RequestIDMetadataKey)[0] != "client-42" {
-		t.Fatalf("response = %q, header = %v", response.Value, header)
+	if response.Value != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("trace ID = %q", response.Value)
 	}
 
 	err := connection.Invoke(context.Background(), "/test.Service/Fail", wrapperspb.String(""), new(wrapperspb.StringValue))
@@ -96,6 +97,19 @@ func TestServerWithBufconn(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func fixedSpanContext(t *testing.T) trace.SpanContext {
+	t.Helper()
+	traceID, err := trace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanID, err := trace.SpanIDFromHex("0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled})
 }
 
 func TestGracefulStopFallsBackToForceStop(t *testing.T) {
@@ -227,6 +241,9 @@ func dialBufconn(t *testing.T, listener *bufconn.Listener) *grpc.ClientConn {
 		"passthrough:///bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler(
+			otelgrpc.WithPropagators(telemetry.Propagator()),
+		)),
 	)
 	if err != nil {
 		t.Fatal(err)

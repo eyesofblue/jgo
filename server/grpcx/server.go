@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"github.com/eyesofblue/jgo/app"
+	"github.com/eyesofblue/jgo/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
@@ -35,8 +37,8 @@ type Server struct {
 	stopRequested bool
 }
 
-// New creates a gRPC server with request ID, error mapping, and recovery
-// interceptors enabled by default.
+// New creates a gRPC server with OpenTelemetry, error mapping, and recovery
+// enabled by default.
 func New(opts ...Option) (*Server, error) {
 	config := defaultConfig()
 	for _, opt := range opts {
@@ -128,6 +130,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	options := append([]grpc.ServerOption(nil), s.options...)
 	options = append(options,
+		grpc.StatsHandler(otelgrpc.NewServerHandler(
+			otelgrpc.WithPropagators(telemetry.Propagator()),
+		)),
 		grpc.ChainUnaryInterceptor(s.unary...),
 		grpc.ChainStreamInterceptor(s.stream...),
 	)

@@ -42,13 +42,17 @@ func Generate(input Config) (string, error) {
 		return "", fmt.Errorf("open embedded templates: %w", err)
 	}
 	sets := []string{"common"}
-	if config.HasWeb() {
-		sets = append(sets, "web")
+	if config.IsProto() {
+		sets = []string{"proto"}
+	} else {
+		if config.HasWeb() {
+			sets = append(sets, "web")
+		}
+		if config.HasGRPC() {
+			sets = append(sets, "grpc")
+		}
+		sets = append(sets, filepath.ToSlash(filepath.Join("main", string(config.Type))))
 	}
-	if config.HasGRPC() {
-		sets = append(sets, "grpc")
-	}
-	sets = append(sets, filepath.ToSlash(filepath.Join("main", string(config.Type))))
 	for _, set := range sets {
 		if err := renderSet(templates, set, temporary, config); err != nil {
 			return "", err
@@ -175,12 +179,26 @@ func render(name string, contents []byte, config Config) ([]byte, error) {
 }
 
 func validateGenerated(root string, config Config) error {
-	required := []string{"go.mod", "README.md", "Makefile", "cmd/server/main.go", "internal/config/config.go", "internal/service/service.go", "internal/tooldeps/deps.go", "configs/local.yaml"}
+	if config.IsProto() {
+		required := []string{
+			"go.mod", "README.md", "Makefile", "doc.go", "buf.yaml", "buf.gen.yaml",
+			"api/proto/" + config.PackageName + "/v1/service.proto",
+			"internal/tooldeps/deps.go",
+		}
+		for _, relative := range required {
+			info, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative)))
+			if err != nil || info.IsDir() {
+				return fmt.Errorf("%w: missing %s", ErrGeneratedInvalid, relative)
+			}
+		}
+		return nil
+	}
+	required := []string{"go.mod", "README.md", "Makefile", "cmd/server/main.go", "internal/config/config.go", "internal/rpcclient/clients.gen.go", "internal/service/service.go", "internal/tooldeps/deps.go", "configs/local.yaml"}
 	if config.HasWeb() {
 		required = append(required, "api/http/openapi.yaml", "internal/transport/http/routes.go")
 	}
 	if config.HasGRPC() {
-		required = append(required, "api/proto/"+config.PackageName+"/v1/service.proto", "internal/transport/grpc/register.go", "internal/transport/grpc/register.gen.go", "buf.yaml", "buf.gen.yaml")
+		required = append(required, "api/proto/"+config.PackageName+"/v1/service.proto", "internal/transport/grpc/register.go", "internal/transport/grpc/register.gen.go", "internal/transport/grpc/external.gen.go", "buf.yaml", "buf.gen.yaml")
 	}
 	sort.Strings(required)
 	for _, relative := range required {

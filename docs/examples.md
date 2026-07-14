@@ -62,7 +62,7 @@ jgo new user-rpc --module example.com/user-rpc --type grpc
 cd user-rpc
 jgo tools install
 
-jgo rpc add GetUser --service UserRpcService
+jgo rpc pbapi add GetUser --service UserRpcService
 # 编辑 request；response 已有 code=1、msg=2，业务字段从编号 3 开始。
 jgo generate
 jgo run
@@ -76,7 +76,7 @@ jgo call grpc UserRpcService.GetUser \
   --data '{"uid":12345}'
 ```
 
-所有由 `jgo rpc add` 创建的响应都包含：
+所有由 `jgo rpc pbapi add` 创建的响应都包含：
 
 ```proto
 message GetUserResponse {
@@ -116,3 +116,58 @@ jgo run
 ```
 
 mixed 项目使用同一个 `app.App` 生命周期和 `internal/service` 业务层，同时启动 HTTP `:8080` 与 gRPC `:9090`。
+
+## proto 公共协议仓库
+
+`company-api` 是可自由替换的项目名和 module 名：
+
+```bash
+jgo new company-api --module example.com/company-api --type proto
+cd company-api
+jgo tools install
+
+jgo rpc pbapi add GetUser --service CompanyApiService
+jgo rpc pbservice add OrderService # 同一仓库中增加第二个 Service
+# 完善 api/proto/company_api/v1/service.proto。
+jgo rpc generate
+jgo list
+go test ./...
+```
+
+生成结果位于 `gen/pb/company_api/v1`。公共仓库应提交 `.proto` 和 `gen/pb`，发布 Go module tag 后，由服务端和调用方共同依赖该版本：
+
+```bash
+go get example.com/company-api@v0.1.0
+```
+
+proto 项目不包含 `cmd/server`、业务实现和 JGO runtime，因此不能执行 `jgo run` 或生成服务端二进制。
+
+## 公共协议的服务端和客户端接入
+
+发布 `example.com/company-api@v0.1.1` 后，在 gRPC/mixed 服务端执行：
+
+```bash
+jgo rpc server add UserService \
+  --module example.com/company-api@v0.1.1
+```
+
+JGO 会生成注册 adapter 和 `Service.UserService<RPC>` 业务占位方法。在调用方执行：
+
+```bash
+jgo rpc client add UserService \
+  --module example.com/company-api@v0.1.1 \
+  --name user \
+  --address 127.0.0.1:9090
+```
+
+业务代码直接调用生成的 protobuf interface：
+
+```go
+response, err := s.RPC.User.GetUser(ctx, request)
+```
+
+module tag 与 protobuf API 版本独立。同一 module 同时包含 `UserService` v1/v2 时，增加：
+
+```bash
+--package example.com/company-api/gen/pb/company_api/v2
+```

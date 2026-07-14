@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package demo_proto.v1;
+
+option go_package = "example.com/demo-proto/gen/pb/demo_proto/v1;demo_protov1";
+
+service DemoProtoService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+}
+
+service AdminService {
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  int32 code = 1;
+  string msg = 2;
+  string message = 3;
+}
+
+message GetUserRequest {
+  int64 uid = 1;
+}
+
+message GetUserResponse {
+  int32 code = 1;
+  string msg = 2;
+  string trace_id = 3;
+}
+
+message PingRequest {}
+
+message PingResponse {
+  int32 code = 1;
+  string msg = 2;
+}

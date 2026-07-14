@@ -39,6 +39,31 @@ func TestNewCommandCreatesProject(t *testing.T) {
 	}
 }
 
+func TestNewCommandCreatesStandaloneProtoProject(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "company-api")
+	var output bytes.Buffer
+	err := Execute(&output, &output, []string{
+		"new", "company-api",
+		"--module", "example.com/company-api",
+		"--type", "proto",
+		"--output", target,
+		"--skip-tidy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "created proto project company-api") {
+		t.Fatalf("stdout = %q", output.String())
+	}
+	goMod, err := os.ReadFile(filepath.Join(target, "go.mod"))
+	if err != nil || strings.Contains(string(goMod), "github.com/eyesofblue/jgo") {
+		t.Fatalf("go.mod = %q, %v", goMod, err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "cmd", "server", "main.go")); !os.IsNotExist(err) {
+		t.Fatalf("proto project server exists: %v", err)
+	}
+}
+
 func TestNewCommandRequiresModuleAndType(t *testing.T) {
 	var output bytes.Buffer
 	err := Execute(&output, &output, []string{"new", "demo"})
@@ -96,7 +121,7 @@ func TestRPCAddCommandUpdatesContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	err := Execute(&output, &output, []string{"rpc", "add", "GetUser", "--service", "UserService", "--root", root})
+	err := Execute(&output, &output, []string{"rpc", "pbapi", "add", "GetUser", "--service", "UserService", "--root", root})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -111,6 +136,36 @@ func TestRPCAddCommandUpdatesContract(t *testing.T) {
 		if !strings.Contains(string(contents), fragment) {
 			t.Fatalf("contract does not contain %q:\n%s", fragment, contents)
 		}
+	}
+}
+
+func TestRPCPBServiceAddCommandUpdatesContract(t *testing.T) {
+	root := t.TempDir()
+	contract := filepath.Join(root, "api", "proto", "demo", "v1", "service.proto")
+	if err := os.MkdirAll(filepath.Dir(contract), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(contract, []byte("syntax = \"proto3\";\npackage demo.v1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := Execute(&output, &output, []string{"rpc", "pbservice", "add", "UserService", "--root", root}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "added protobuf service UserService") {
+		t.Fatalf("stdout = %q", output.String())
+	}
+	contents, err := os.ReadFile(contract)
+	if err != nil || !strings.Contains(string(contents), "service UserService") {
+		t.Fatalf("contract = %q, %v", contents, err)
+	}
+}
+
+func TestRPCOldAddCommandIsRemoved(t *testing.T) {
+	var output bytes.Buffer
+	err := Execute(&output, &output, []string{"rpc", "add", "GetUser", "--service", "UserService"})
+	if err == nil {
+		t.Fatalf("Execute() error = %v", err)
 	}
 }
 

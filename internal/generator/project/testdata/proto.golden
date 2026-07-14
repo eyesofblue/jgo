@@ -1,0 +1,9 @@
+.gitignore
+Makefile
+README.md
+api/proto/demo_app/v1/service.proto
+buf.gen.yaml
+buf.yaml
+doc.go
+go.mod
+internal/tooldeps/deps.go

@@ -84,8 +84,8 @@ func WithRequestTimeout(timeout time.Duration) Option {
 	return func(config *config) { config.requestTimeout = timeout }
 }
 
-// WithDefaultMiddleware controls request ID, access log, timeout, and recovery
-// middleware. It is enabled by default.
+// WithDefaultMiddleware controls OpenTelemetry tracing, trace ID response,
+// access log, timeout, and recovery middleware. It is enabled by default.
 func WithDefaultMiddleware(enabled bool) Option {
 	return func(config *config) { config.defaultMiddleware = enabled }
 }
