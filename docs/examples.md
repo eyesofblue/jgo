@@ -63,7 +63,7 @@ cd user-rpc
 jgo tools install
 
 jgo rpc add GetUser --service UserRpcService
-# 编辑 api/proto/user_rpc/v1/service.proto 中的 request/response 字段。
+# 编辑 request；response 已有 code=1、msg=2，业务字段从编号 3 开始。
 jgo generate
 jgo run
 ```
@@ -75,6 +75,18 @@ jgo call grpc UserRpcService.GetUser \
   --addr 127.0.0.1:9090 \
   --data '{"uid":12345}'
 ```
+
+所有由 `jgo rpc add` 创建的响应都包含：
+
+```proto
+message GetUserResponse {
+  int32 code = 1;
+  string msg = 2;
+  UserInfo data = 3;
+}
+```
+
+`code`、`msg` 使用普通字段。业务字段是否使用 `optional` 由接口语义决定；调试 JSON 会显示所有普通字段的零值，并省略未设置的 `optional` 字段。
 
 ## mixed
 

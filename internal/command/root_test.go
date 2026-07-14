@@ -98,8 +98,17 @@ func TestRPCAddCommandUpdatesContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !strings.Contains(output.String(), "edit message fields, then run jgo rpc generate") {
+	if !strings.Contains(output.String(), "response code/msg use fields 1/2; add business fields from 3") {
 		t.Fatalf("stdout = %q", output.String())
+	}
+	contents, err := os.ReadFile(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"int32 code = 1;", "string msg = 2;"} {
+		if !strings.Contains(string(contents), fragment) {
+			t.Fatalf("contract does not contain %q:\n%s", fragment, contents)
+		}
 	}
 }
 

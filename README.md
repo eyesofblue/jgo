@@ -105,7 +105,7 @@ cd user-rpc
 jgo tools install # Run the first time this environment uses JGO gRPC.
 jgo doctor
 jgo rpc add GetUser --service UserRpcService
-# Edit the GetUserRequest and GetUserResponse messages under api/proto/.
+# Edit GetUserRequest; GetUserResponse already has code/msg, so add business fields from number 3.
 jgo rpc generate
 # Implement the generated UserRpcServiceGetUser method under internal/service/.
 go test ./...
@@ -115,6 +115,8 @@ jgo run
 The initial protobuf service name is derived from the project name; for example, `user-rpc` becomes `UserRpcService` with a sample `Echo` RPC. Keep or remove the sample when establishing the real contract. The gRPC Health service is always registered, and its address is read from `configs/local.yaml`.
 
 JGO locks Buf `1.46.0`, `protoc-gen-go` `1.36.7`, and `protoc-gen-go-grpc` `1.5.1`. gRPC business methods use `<Service><RPC>` names, such as `UserRpcServiceGetUser`; public protobuf service and RPC names remain unchanged.
+
+Every JGO RPC response uses non-optional `int32 code = 1` and `string msg = 2`; business success is `0`. User-defined business fields start at number `3` and use `optional` only when they need to distinguish absence from an explicit zero value. `jgo call grpc` displays zero values such as `0`, `""`, and `false` for ordinary fields while still omitting unset optional/message fields.
 
 ### Mixed service
 
@@ -162,7 +164,7 @@ For example, add `GetUser` to an existing `UserService` that already has other R
 ```bash
 jgo doctor       # Verify the locked tool versions in the current environment.
 jgo rpc add GetUser --service UserService
-# Edit GetUserRequest/GetUserResponse in the corresponding .proto file.
+# Edit the request; the response already has code=1/msg=2, so add business fields from number 3.
 jgo rpc generate
 # Implement the generated UserServiceGetUser method.
 go test ./...
@@ -189,6 +191,8 @@ jgo call grpc UserRpcService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 ```
 
 Both call commands support repeatable `--header 'Name: Value'` metadata and `--timeout`. gRPC prefers server Reflection and automatically falls back to protobuf files under `api/proto/`.
+
+A generated project's README documents the stable workflow instead of duplicating an API inventory that can become stale. OpenAPI/proto files are the contract source of truth; use `jgo list` to inspect current HTTP and gRPC interfaces.
 
 ## Developer workflow
 

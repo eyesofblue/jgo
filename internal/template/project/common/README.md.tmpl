@@ -27,44 +27,39 @@ jgo list
 jgo run
 jgo build
 ```
+
+This README documents the workflow, not a duplicated API inventory. Run `jgo list` for the current interfaces; OpenAPI and protobuf files are the source of truth.
 {{if .HasWeb}}
 
 ## HTTP API
 
-Public request and response structs live in `api/http/model/`. Add and generate an API with:
-
-First define `UserInfo` (and any complex request type) as a Go struct in `api/http/model/`, then run:
+Public request and response structs live in `api/http/model/`. Define complex Go structs there, then add and generate operations with:
 
 ```bash
-jgo api add GetUser --method GET --path /get_user \
-  --request uid:int64:required \
-  --response-data UserInfo
+jgo api add OperationName --method GET --path /rpc_style_path \
+  --request name:type:required:query \
+  --response-data ResponseStruct
 jgo api generate
-
-jgo call http GetUser \
-  --addr http://127.0.0.1:8080 \
-  --data '{"uid":12345}'
+jgo list
 ```
 {{end}}
 {{if .HasGRPC}}
 
 ## gRPC API
 
-Install the locked Buf toolchain once, add an RPC, edit its protobuf fields, and generate code:
+Install the locked Buf toolchain once per development environment. New RPC responses already contain required non-optional `code` and `msg` fields; add business fields from field number 3:
 
 ```bash
 jgo tools install
-jgo rpc add GetUser --service {{.ServiceName}}
-# Edit api/proto/{{.PackageName}}/v1/service.proto.
+jgo rpc add RPCName --service {{.ServiceName}}
+# Edit request fields and add response business fields from number 3 in
+# api/proto/{{.PackageName}}/v1/service.proto.
 jgo rpc generate
-
-jgo call grpc {{.ServiceName}}.GetUser \
-  --addr 127.0.0.1:9090 \
-  --data '{}'
+jgo list
 ```
 
 `jgo rpc generate` overwrites generated protobuf and transport files, but never overwrites an existing business service method.
-Generated business methods use `<Service><RPC>` names, such as `{{.ServiceName}}GetUser`, so mixed projects can safely use the same operation name over HTTP and gRPC.
+Generated business methods use `<Service><RPC>` names, so mixed projects can safely use the same operation name over HTTP and gRPC. `jgo call grpc` displays zero values for non-optional fields; unset `optional` fields remain omitted.
 {{end}}
 {{if eq .JGOVersion "v0.0.0"}}
 

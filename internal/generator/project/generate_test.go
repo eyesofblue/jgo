@@ -44,9 +44,19 @@ func TestGenerateProjectTrees(t *testing.T) {
 			}
 			if projectType != TypeWeb {
 				contract, err := os.ReadFile(filepath.Join(target, "api", "proto", "demo_app", "v1", "service.proto"))
-				if err != nil || !strings.Contains(string(contract), "service DemoAppService") {
+				if err != nil || !strings.Contains(string(contract), "service DemoAppService") ||
+					!strings.Contains(string(contract), "int32 code = 1;") ||
+					!strings.Contains(string(contract), "string msg = 2;") ||
+					!strings.Contains(string(contract), "string message = 3;") {
 					t.Fatalf("derived protobuf service missing: %v\n%s", err, contract)
 				}
+			}
+			readme, err := os.ReadFile(filepath.Join(target, "README.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(readme), "GetUser") || !strings.Contains(string(readme), "jgo list") {
+				t.Fatalf("generated README contains a stale API example or lacks jgo list:\n%s", readme)
 			}
 		})
 	}

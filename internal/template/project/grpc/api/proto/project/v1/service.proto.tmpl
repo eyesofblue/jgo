@@ -13,5 +13,7 @@ message EchoRequest {
 }
 
 message EchoResponse {
-  string message = 1;
+  int32 code = 1;
+  string msg = 2;
+  string message = 3;
 }

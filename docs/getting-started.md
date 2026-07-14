@@ -70,6 +70,8 @@ jgo build
 
 `jgo build` 默认生成 `bin/<项目目录名>`，也可以使用 `--output/-o` 指定路径。
 
+新增 gRPC 方法时，`jgo rpc add` 会自动为 response 保留非 optional 的 `int32 code = 1` 和 `string msg = 2`；业务字段从编号 `3` 开始。当前接口始终以 OpenAPI/proto 为准，使用 `jgo list` 查看，不需要手工维护第二份接口清单。
+
 ## 调试接口
 
 ```bash
@@ -83,6 +85,8 @@ jgo call grpc UserService.Echo \
 ```
 
 两种协议都支持可重复的 `--header/-H 'Name: Value'` 和 `--timeout`。
+
+`jgo call grpc` 会显示普通 protobuf 字段的零值；未设置的 `optional` 和 message 字段仍然省略。
 
 ## Bash/Zsh completion
 

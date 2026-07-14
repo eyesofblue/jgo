@@ -105,7 +105,7 @@ cd user-rpc
 jgo tools install # 当前开发环境首次使用 JGO gRPC 时执行
 jgo doctor
 jgo rpc add GetUser --service UserRpcService
-# 编辑 api/proto/ 下的 GetUserRequest 和 GetUserResponse message 字段。
+# 编辑 GetUserRequest；GetUserResponse 已有 code/msg，业务字段从编号 3 开始。
 jgo rpc generate
 # 实现 internal/service/ 中新生成的 UserRpcServiceGetUser 方法。
 go test ./...
@@ -115,6 +115,8 @@ jgo run
 新 gRPC 项目的 service 名根据项目名生成；例如 `user-rpc` 对应 `UserRpcService`，并自带 `Echo` 示例。示例可以保留或在形成正式契约时删除。gRPC Health 服务始终注册，默认地址从 `configs/local.yaml` 读取。
 
 JGO 锁定 Buf `1.46.0`、`protoc-gen-go` `1.36.7` 和 `protoc-gen-go-grpc` `1.5.1`。gRPC 业务方法使用 `<Service><RPC>` 命名，例如 `UserRpcServiceGetUser`；对外 protobuf service 和 RPC 名称保持不变。
+
+JGO 的每个 RPC response 固定使用非 optional 的 `int32 code = 1` 和 `string msg = 2`，成功业务码为 `0`。用户定义的业务字段从编号 `3` 开始，并根据是否需要区分“未设置”和“显式零值”自行决定是否使用 `optional`。`jgo call grpc` 会显示普通字段的 `0`、`""`、`false` 等零值，但仍省略未设置的 optional/message 字段。
 
 ### mixed 服务
 
@@ -162,7 +164,7 @@ go test ./...
 ```bash
 jgo doctor       # 检查当前环境中的锁定工具版本
 jgo rpc add GetUser --service UserService
-# 编辑对应 .proto 中的 GetUserRequest/GetUserResponse 字段。
+# 编辑 request；response 已有 code=1、msg=2，业务字段从编号 3 开始。
 jgo rpc generate
 # 实现新生成的 UserServiceGetUser 方法。
 go test ./...
@@ -189,6 +191,8 @@ jgo call grpc UserRpcService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 ```
 
 两种调用命令都支持可重复的 `--header 'Name: Value'` 和 `--timeout`。gRPC 优先使用服务端 Reflection，失败时自动读取 `api/proto/` 下的本地 protobuf 文件。
+
+生成项目自己的 README 只描述稳定工作流，不复制一份容易过期的接口清单。OpenAPI/proto 是协议真源，随时使用 `jgo list` 查看当前 HTTP 和 gRPC 接口。
 
 ## 开发流程
 

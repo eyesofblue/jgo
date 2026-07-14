@@ -923,7 +923,7 @@ jgo api generate
 已完成：
 
 - 实现 `jgo rpc add <rpc-name> --service <service-name>`，并提供可选 `--file` 处理多文件同名 service。
-- `rpc add` 默认创建 `<RPC>Request` 和 `<RPC>Response` 两个空 message，由开发者直接编辑 proto 字段。
+- 阶段 6 初版的 `rpc add` 创建两个空 message；v0.2.0 P1 已将 response 调整为自动包含标准 `code/msg` 字段。
 - 使用 protocompile AST 解析 proto，精确定位 service 结束位置；不使用正则或特殊注释锚点。
 - 在写入前检查 proto 语法、service 唯一性、RPC 重名、message 冲突、文件边界和符号链接，并在同目录原子替换契约。
 - 实现 `jgo rpc generate`，依次校验锁定工具版本、执行 `buf lint` 和 `buf generate`。
@@ -1044,3 +1044,15 @@ jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 - `jgo tools install/check` 在 goenv 环境中解析到真实工具路径，三个工具均由 Go 1.25.12 构建并可正常运行。
 - 真实创建 web、grpc、mixed 三类项目，创建后立即存在 `go.sum`。
 - 三类项目的接口新增、重复生成幂等、doctor、单元测试和构建全部通过。
+
+### 2026-07-14：v0.2.0 P1 协议一致性与使用体验
+
+已完成：
+
+- 初始 Echo 和 `jgo rpc add` 创建的每个 response 固定声明非 optional 的 `int32 code = 1`、`string msg = 2`，用户业务字段从编号 `3` 开始。
+- `code = 0` 表示业务成功；gRPC status 继续表达传输或系统错误，不与业务码混用。
+- `jgo call grpc` 使用 `protojson.EmitDefaultValues`，普通无 presence 字段的零值会显示，未设置的 optional/message 字段仍然省略。
+- `jgo rpc generate` 和统一 `jgo generate` 对存量非标准 response 给出迁移警告，但不阻断生成。
+- `rpc add` 的结果提示明确指出保留字段和下一步命令。
+- 生成项目 README 只维护稳定工作流，不复制容易过期的接口清单；OpenAPI/proto 是协议真源，`jgo list` 展示当前接口。
+- 中英文 README、命令参考、示例和变更记录同步上述约定。

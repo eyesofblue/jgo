@@ -54,7 +54,10 @@ func newGenerateCommand(stdout io.Writer) *cobra.Command {
 				if err := protobufgen.Generate(project.root); err != nil {
 					return err
 				}
-				_, _ = fmt.Fprintln(stdout, "generated protobuf and gRPC code")
+				if err := printResponseContractWarnings(stdout, project.root); err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintln(stdout, "generated protobuf and gRPC code; review internal/service, then run go test ./...")
 			}
 			return nil
 		},

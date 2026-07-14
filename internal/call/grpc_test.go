@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 const healthContract = `syntax = "proto3";
@@ -53,6 +54,63 @@ func TestCallGRPCUsesReflectionAndMetadata(t *testing.T) {
 	var response map[string]any
 	if err := json.Unmarshal(result.Body, &response); err != nil || response["status"] != "SERVING" {
 		t.Fatalf("body = %s, decode error = %v", result.Body, err)
+	}
+}
+
+func TestCallGRPCEmitsDefaultValuesForNonPresenceFields(t *testing.T) {
+	healthServerAddress, healthStop := startHealthServerWithoutStatus(t)
+	defer healthStop()
+	result, err := CallGRPC(context.Background(), GRPCConfig{
+		Root: t.TempDir(), Method: "Health.Check", Address: healthServerAddress,
+		Data: `{"service":""}`,
+	})
+	if err != nil {
+		t.Fatalf("CallGRPC() zero response error = %v", err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(result.Body, &response); err != nil {
+		t.Fatalf("decode body %s: %v", result.Body, err)
+	}
+	if response["status"] != "UNKNOWN" {
+		t.Fatalf("zero-value enum was omitted: %s", result.Body)
+	}
+}
+
+func TestMarshalGRPCResponsePreservesOptionalPresence(t *testing.T) {
+	root := t.TempDir()
+	writeCommandContractPath := filepath.Join(root, "api", "proto", "demo", "v1", "response.proto")
+	if err := os.MkdirAll(filepath.Dir(writeCommandContractPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contract := `syntax = "proto3";
+package demo.v1;
+message Response {
+  int32 code = 1;
+  string msg = 2;
+  optional string detail = 3;
+}
+`
+	if err := os.WriteFile(writeCommandContractPath, []byte(contract), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err := compileLocalProtos(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := files[0].Messages().ByName("Response")
+	encoded, err := marshalGRPCResponse(dynamicpb.NewMessage(descriptor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(encoded, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["code"] != float64(0) || response["msg"] != "" {
+		t.Fatalf("ordinary zero values missing: %s", encoded)
+	}
+	if _, exists := response["detail"]; exists {
+		t.Fatalf("unset optional field was emitted: %s", encoded)
 	}
 }
 
@@ -118,6 +176,30 @@ func startHealthServer(t *testing.T, withReflection bool) (string, func()) {
 		server.Stop()
 		_ = listener.Close()
 	}
+}
+
+func startHealthServerWithoutStatus(t *testing.T) (string, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	healthpb.RegisterHealthServer(server, zeroHealthServer{})
+	reflection.Register(server)
+	go func() { _ = server.Serve(listener) }()
+	return listener.Addr().String(), func() {
+		server.Stop()
+		_ = listener.Close()
+	}
+}
+
+type zeroHealthServer struct {
+	healthpb.UnimplementedHealthServer
+}
+
+func (zeroHealthServer) Check(context.Context, *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	return &healthpb.HealthCheckResponse{}, nil
 }
 
 func writeHealthContract(t *testing.T) string {

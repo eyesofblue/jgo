@@ -65,6 +65,9 @@ for project_type in web grpc mixed; do
     "${temporary_root}/jgo" rpc add GetUser \
       --service "${service_name}" \
       --root "${project_root}"
+    proto_file="${project_root}/api/proto/${project_name//-/_}/v1/service.proto"
+    grep -q 'int32 code = 1;' "${proto_file}"
+    grep -q 'string msg = 2;' "${proto_file}"
   fi
 
   "${temporary_root}/jgo" generate --root "${project_root}"

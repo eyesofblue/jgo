@@ -32,7 +32,8 @@ type parsedFile struct {
 	service *ast.ServiceNode
 }
 
-// Add adds an RPC and empty request/response messages to a protobuf contract.
+// Add adds an RPC, an empty request message, and a response message with JGO's
+// required business status fields to a protobuf contract.
 func Add(config AddConfig) (string, error) {
 	if config.Root == "" {
 		config.Root = "."
@@ -49,6 +50,7 @@ func Add(config AddConfig) (string, error) {
 		return "", err
 	}
 	matches := make([]parsedFile, 0, 1)
+	availableServices := map[string]bool{}
 	for _, path := range files {
 		parsed, err := parseFile(path)
 		if err != nil {
@@ -56,7 +58,11 @@ func Add(config AddConfig) (string, error) {
 		}
 		for _, declaration := range parsed.root.Decls {
 			service, ok := declaration.(*ast.ServiceNode)
-			if ok && service.Name.Val == config.Service {
+			if !ok {
+				continue
+			}
+			availableServices[service.Name.Val] = true
+			if service.Name.Val == config.Service {
 				copy := parsed
 				copy.service = service
 				matches = append(matches, copy)
@@ -64,10 +70,23 @@ func Add(config AddConfig) (string, error) {
 		}
 	}
 	if len(matches) == 0 {
-		return "", fmt.Errorf("protobuf: service %q not found under %s", config.Service, filepath.Join(config.Root, protoRoot))
+		available := make([]string, 0, len(availableServices))
+		for service := range availableServices {
+			available = append(available, service)
+		}
+		sort.Strings(available)
+		hint := ""
+		if len(available) > 0 {
+			hint = "; available services: " + strings.Join(available, ", ")
+		}
+		return "", fmt.Errorf("protobuf: service %q not found under %s%s", config.Service, filepath.Join(config.Root, protoRoot), hint)
 	}
 	if len(matches) > 1 {
-		return "", fmt.Errorf("protobuf: service %q is declared in multiple files; select one with --file", config.Service)
+		paths := make([]string, 0, len(matches))
+		for _, match := range matches {
+			paths = append(paths, displayPath(config.Root, match.path))
+		}
+		return "", fmt.Errorf("protobuf: service %q is declared in multiple files; select one with --file: %s", config.Service, strings.Join(paths, ", "))
 	}
 
 	match := matches[0]
@@ -89,7 +108,7 @@ func Add(config AddConfig) (string, error) {
 		return "", errors.New("protobuf: invalid service source location")
 	}
 	rpcDeclaration := fmt.Sprintf("  rpc %s(%s) returns (%s);\n", config.RPC, requestName, responseName)
-	messageDeclarations := fmt.Sprintf("\n\nmessage %s {\n}\n\nmessage %s {\n}\n", requestName, responseName)
+	messageDeclarations := fmt.Sprintf("\n\nmessage %s {\n}\n\nmessage %s {\n  int32 code = 1;\n  string msg = 2;\n}\n", requestName, responseName)
 	updated := make([]byte, 0, len(match.source)+len(rpcDeclaration)+len(messageDeclarations))
 	updated = append(updated, match.source[:closeOffset]...)
 	updated = append(updated, rpcDeclaration...)

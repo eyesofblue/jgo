@@ -78,7 +78,7 @@ jgo rpc add <rpc-name> \
 jgo rpc generate [--root <project>]
 ```
 
-`rpc add` 创建空 request/response message；随后在 `.proto` 中编辑字段，再执行生成。`rpc generate` 使用锁定的 Buf 工具链，覆盖生成代码，但不会覆盖已存在的业务方法。生成的业务方法按 `<Service><RPC>` 命名，例如 `UserService.GetUser` 对应 `Service.UserServiceGetUser`，以避免 mixed 项目协议间的方法冲突。
+`rpc add` 创建空 request message，并为 response 自动声明非 optional 的 `int32 code = 1` 和 `string msg = 2`。业务响应字段从编号 `3` 开始。`rpc generate` 使用锁定的 Buf 工具链，覆盖生成代码，但不会覆盖已存在的业务方法；存量 response 不符合标准时只输出迁移警告，不阻断生成。生成的业务方法按 `<Service><RPC>` 命名，例如 `UserService.GetUser` 对应 `Service.UserServiceGetUser`，以避免 mixed 项目协议间的方法冲突。
 
 ## 统一开发流程
 
@@ -117,3 +117,5 @@ jgo call grpc <service.method> \
 ```
 
 `--header/-H` 可重复，`--data/-d` 默认 `{}`。HTTP 调用按 OpenAPI 契约组装请求；gRPC 调用优先使用服务端 Reflection，失败后读取项目 `api/proto/` 下的本地描述。
+
+`jgo call grpc` 使用 protobuf JSON 的默认值展示模式：没有 presence 的普通标量字段即使为 `0`、`""` 或 `false` 也会输出；未设置的 `optional` 字段和 message 字段保持省略。该行为只影响调试 JSON，不改变 protobuf 二进制协议。

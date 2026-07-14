@@ -15,7 +15,7 @@ service UserService {
 }
 `
 
-func TestAddCreatesRPCAndEmptyMessages(t *testing.T) {
+func TestAddCreatesRPCAndStandardResponse(t *testing.T) {
 	root, path := writeContract(t, "demo/v1/service.proto", testContract)
 	gotPath, err := Add(AddConfig{Root: root, Service: "UserService", RPC: "GetUser"})
 	if err != nil {
@@ -31,7 +31,7 @@ func TestAddCreatesRPCAndEmptyMessages(t *testing.T) {
 	wantFragments := []string{
 		"service UserService {\n  rpc GetUser(GetUserRequest) returns (GetUserResponse);\n}",
 		"message GetUserRequest {\n}",
-		"message GetUserResponse {\n}",
+		"message GetUserResponse {\n  int32 code = 1;\n  string msg = 2;\n}",
 	}
 	for _, fragment := range wantFragments {
 		if !strings.Contains(string(contents), fragment) {
@@ -80,7 +80,15 @@ func TestAddRejectsAmbiguousService(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := Add(AddConfig{Root: root, Service: "UserService", RPC: "GetUser"})
-	if err == nil || !strings.Contains(err.Error(), "multiple files") {
+	if err == nil || !strings.Contains(err.Error(), "multiple files") || !strings.Contains(err.Error(), "one.proto") || !strings.Contains(err.Error(), "two.proto") {
+		t.Fatalf("Add() error = %v", err)
+	}
+}
+
+func TestAddSuggestsAvailableServices(t *testing.T) {
+	root, _ := writeContract(t, "demo/v1/service.proto", testContract)
+	_, err := Add(AddConfig{Root: root, Service: "MissingService", RPC: "GetUser"})
+	if err == nil || !strings.Contains(err.Error(), "available services: UserService") {
 		t.Fatalf("Add() error = %v", err)
 	}
 }

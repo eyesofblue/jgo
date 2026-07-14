@@ -105,11 +105,18 @@ func CallGRPC(ctx context.Context, config GRPCConfig) (GRPCResult, error) {
 	if err := connection.Invoke(callContext, fullMethod, request, response); err != nil {
 		return GRPCResult{}, fmt.Errorf("call grpc: invoke %s: %w", fullMethod, err)
 	}
-	encoded, err := (protojson.MarshalOptions{Indent: "  "}).Marshal(response)
+	encoded, err := marshalGRPCResponse(response)
 	if err != nil {
 		return GRPCResult{}, fmt.Errorf("call grpc: encode response: %w", err)
 	}
 	return GRPCResult{Body: append(encoded, '\n')}, nil
+}
+
+func marshalGRPCResponse(response proto.Message) ([]byte, error) {
+	return (protojson.MarshalOptions{
+		Indent:            "  ",
+		EmitDefaultValues: true,
+	}).Marshal(response)
 }
 
 // ListGRPC compiles local protobuf sources and lists their services and methods.
