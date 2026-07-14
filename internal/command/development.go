@@ -14,6 +14,7 @@ import (
 	openapigen "github.com/eyesofblue/jgo/internal/generator/openapi"
 	projectgen "github.com/eyesofblue/jgo/internal/generator/project"
 	protobufgen "github.com/eyesofblue/jgo/internal/generator/protobuf"
+	rpcbindinggen "github.com/eyesofblue/jgo/internal/generator/rpcbinding"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/modfile"
 )
@@ -39,8 +40,12 @@ func newGenerateCommand(stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			hasContracts, err := protobufgen.HasContracts(project.root)
+			if err != nil {
+				return err
+			}
 			// Check the external toolchain before changing any HTTP generated files.
-			if project.hasGRPC {
+			if hasContracts {
 				if err := protobufgen.CheckTools(project.root); err != nil {
 					return err
 				}
@@ -62,10 +67,21 @@ func newGenerateCommand(stdout io.Writer) *cobra.Command {
 				if err := printCreatedServiceStubs(stdout, result); err != nil {
 					return err
 				}
-				if result.ProtocolOnly {
+				if result.Empty {
+					_, _ = fmt.Fprintln(stdout, "no local protobuf contracts; nothing to generate")
+				} else if result.ProtocolOnly {
 					_, _ = fmt.Fprintln(stdout, "generated shared protobuf and gRPC Go packages; run go test ./...")
 				} else {
 					_, _ = fmt.Fprintln(stdout, "generated protobuf and gRPC code; run go test ./...")
+				}
+			}
+			if project.hasServer {
+				reconciled, err := rpcbindinggen.Generate(project.root)
+				if err != nil {
+					return err
+				}
+				if reconciled {
+					_, _ = fmt.Fprintln(stdout, "reconciled external RPC bindings")
 				}
 			}
 			return nil
@@ -92,11 +108,19 @@ func newDoctorCommand(stdout io.Writer) *cobra.Command {
 func newRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	var root string
 	command := &cobra.Command{
-		Use:   "run [server arguments]",
-		Short: "Run the generated project's cmd/server package",
-		Args:  cobra.ArbitraryArgs,
+		Use:                "run [server arguments]",
+		Short:              "Run the generated project's cmd/server package",
+		Args:               cobra.ArbitraryArgs,
+		DisableFlagParsing: true,
 		RunE: func(command *cobra.Command, args []string) error {
-			project, err := inspectProject(root)
+			selectedRoot, forwarded, help, err := parseRunArguments(root, args)
+			if err != nil {
+				return err
+			}
+			if help {
+				return command.Help()
+			}
+			project, err := inspectProject(selectedRoot)
 			if err != nil {
 				return err
 			}
@@ -104,8 +128,8 @@ func newRunCommand(stdout, stderr io.Writer) *cobra.Command {
 				return fmt.Errorf("run project: proto projects do not have a server process")
 			}
 			arguments := []string{"run", "./cmd/server"}
-			if len(args) > 0 {
-				arguments = append(arguments, args...)
+			if len(forwarded) > 0 {
+				arguments = append(arguments, forwarded...)
 			}
 			process := exec.CommandContext(command.Context(), "go", arguments...)
 			process.Dir = project.root
@@ -121,6 +145,32 @@ func newRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	}
 	command.Flags().StringVar(&root, "root", ".", "JGO project root")
 	return command
+}
+
+func parseRunArguments(defaultRoot string, arguments []string) (string, []string, bool, error) {
+	root := defaultRoot
+	var forwarded []string
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		switch {
+		case argument == "-h" || argument == "--help":
+			return root, nil, true, nil
+		case argument == "--":
+			forwarded = append(forwarded, arguments[index+1:]...)
+			return root, forwarded, false, nil
+		case argument == "--root":
+			if index+1 >= len(arguments) {
+				return "", nil, false, fmt.Errorf("run: --root requires a value")
+			}
+			index++
+			root = arguments[index]
+		case strings.HasPrefix(argument, "--root="):
+			root = strings.TrimPrefix(argument, "--root=")
+		default:
+			forwarded = append(forwarded, argument)
+		}
+	}
+	return root, forwarded, false, nil
 }
 
 func newBuildCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -182,6 +232,7 @@ func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
 	checks = append(checks, doctorCheck{name: "project", err: projectErr})
 	checks = append(checks, doctorCheck{name: "Go >= " + projectgen.MinimumGoVersion, err: checkGoVersion(ctx, root)})
 	if projectErr == nil {
+		printWorkspaceInfo(ctx, stdout, project.root)
 		if project.hasServer {
 			checks = append(checks, doctorCheck{name: "JGO module dependency", err: checkJGOModule(project.root)})
 		}
@@ -190,12 +241,22 @@ func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
 			checks = append(checks, doctorCheck{name: "OpenAPI contract", err: err})
 		}
 		if project.hasGRPC {
-			_, err := callruntime.ListGRPC(ctx, project.root)
-			if err == nil {
-				err = protobufgen.ValidateResponseContracts(project.root)
+			hasContracts, err := protobufgen.HasContracts(project.root)
+			if err == nil && hasContracts {
+				_, err = callruntime.ListGRPC(ctx, project.root)
+				if err == nil {
+					err = protobufgen.ValidateResponseContracts(project.root)
+				}
+				checks = append(checks, doctorCheck{name: "protobuf contract", err: err})
+				checks = append(checks, lockedToolDoctorChecks(ctx)...)
+			} else if err != nil {
+				checks = append(checks, doctorCheck{name: "local contract discovery", err: err})
+			} else {
+				_, _ = fmt.Fprintln(stdout, "INFO  local contracts: none; Buf tools are not required")
 			}
-			checks = append(checks, doctorCheck{name: "protobuf contract", err: err})
-			checks = append(checks, lockedToolDoctorChecks(ctx)...)
+		}
+		if project.hasServer {
+			checks = append(checks, doctorCheck{name: "external RPC bindings", err: rpcbindinggen.Validate(project.root)})
 		}
 	}
 	failures := 0
@@ -211,6 +272,36 @@ func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
 		return fmt.Errorf("doctor: %d check(s) failed", failures)
 	}
 	return nil
+}
+
+func printWorkspaceInfo(ctx context.Context, stdout io.Writer, root string) {
+	command := exec.CommandContext(ctx, "go", "env", "GOWORK")
+	command.Dir = root
+	command.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	output, err := command.Output()
+	if err != nil {
+		_, _ = fmt.Fprintf(stdout, "INFO  workspace: unavailable (%v)\n", err)
+		return
+	}
+	workspace := strings.TrimSpace(string(output))
+	if workspace == "" || workspace == "off" {
+		_, _ = fmt.Fprintln(stdout, "INFO  workspace: off")
+	} else {
+		_, _ = fmt.Fprintf(stdout, "INFO  workspace: %s\n", workspace)
+	}
+	contents, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return
+	}
+	file, err := modfile.Parse("go.mod", contents, nil)
+	if err != nil {
+		return
+	}
+	for _, replacement := range file.Replace {
+		if replacement.New.Version == "" {
+			_, _ = fmt.Fprintf(stdout, "INFO  replace: %s => %s\n", replacement.Old.Path, replacement.New.Path)
+		}
+	}
 }
 
 func inspectProject(root string) (projectInfo, error) {

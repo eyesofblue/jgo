@@ -52,10 +52,23 @@ func New(opts ...Option) (*Server, error) {
 	if err := validate(config); err != nil {
 		return nil, err
 	}
+	transportCredentials, err := serverCredentials(config.tls)
+	if err != nil {
+		return nil, err
+	}
+	if transportCredentials != nil {
+		config.serverOptions = append(config.serverOptions, grpc.Creds(transportCredentials))
+	}
 
 	activity := newActivityTracker()
-	unary := append(defaultUnaryInterceptors(config.logger, activity), config.unaryInterceptors...)
-	stream := append(defaultStreamInterceptors(config.logger, activity), config.streamInterceptors...)
+	unary := append([]grpc.UnaryServerInterceptor(nil), config.unaryInterceptors...)
+	unary = append(unary, defaultUnaryInterceptors(config.logger, activity)...)
+	stream := append([]grpc.StreamServerInterceptor(nil), config.streamInterceptors...)
+	stream = append(stream, defaultStreamInterceptors(config.logger, activity)...)
+	if config.authenticator != nil || config.authorizer != nil {
+		unary = append(unary, UnarySecurity(config.authenticator, config.authorizer))
+		stream = append(stream, StreamSecurity(config.authenticator, config.authorizer))
+	}
 	return &Server{
 		name:       strings.TrimSpace(config.name),
 		address:    strings.TrimSpace(config.address),
@@ -105,15 +118,27 @@ func (s *Server) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	listener, server, err := s.prepare(ctx)
+	if err != nil || server == nil {
+		return err
+	}
 
+	s.logger.InfoContext(ctx, "grpc server starting", "name", s.name, "address", listener.Addr().String())
+	err = server.Serve(listener)
+	if errors.Is(err, grpc.ErrServerStopped) {
+		return nil
+	}
+	return err
+}
+
+func (s *Server) prepare(ctx context.Context) (net.Listener, *grpc.Server, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.started {
-		s.mu.Unlock()
-		return ErrAlreadyStarted
+		return nil, nil, ErrAlreadyStarted
 	}
 	if s.stopRequested || ctx.Err() != nil {
-		s.mu.Unlock()
-		return nil
+		return nil, nil, nil
 	}
 	s.started = true
 
@@ -122,8 +147,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if listener == nil {
 		listener, err = net.Listen("tcp", s.address)
 		if err != nil {
-			s.mu.Unlock()
-			return err
+			return nil, nil, err
 		}
 		s.listener = listener
 	}
@@ -137,6 +161,10 @@ func (s *Server) Start(ctx context.Context) error {
 		grpc.ChainStreamInterceptor(s.stream...),
 	)
 	server := grpc.NewServer(options...)
+	// Publish the server before invoking user-supplied registration callbacks.
+	// If one panics, App's recovery can still call Stop without deadlocking or
+	// leaking the listener; the deferred unlock above always releases the mutex.
+	s.server = server
 	for _, register := range s.register {
 		if register != nil {
 			register(server)
@@ -145,15 +173,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.reflection {
 		reflection.Register(server)
 	}
-	s.server = server
-	s.mu.Unlock()
-
-	s.logger.InfoContext(ctx, "grpc server starting", "name", s.name, "address", listener.Addr().String())
-	err = server.Serve(listener)
-	if errors.Is(err, grpc.ErrServerStopped) {
-		return nil
-	}
-	return err
+	return listener, server, nil
 }
 
 // Stop attempts a graceful stop until ctx expires, then force-stops the server.

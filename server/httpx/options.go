@@ -28,6 +28,7 @@ type config struct {
 	requestTimeout    time.Duration
 	defaultMiddleware bool
 	middlewares       []middleware.Middleware
+	outerMiddlewares  []middleware.Middleware
 }
 
 func defaultConfig() config {
@@ -94,5 +95,14 @@ func WithDefaultMiddleware(enabled bool) Option {
 func WithMiddleware(middlewares ...middleware.Middleware) Option {
 	return func(config *config) {
 		config.middlewares = append(config.middlewares, middlewares...)
+	}
+}
+
+// WithOuterMiddleware adds middleware around the timeout, recovery, and
+// application stack while keeping it inside OpenTelemetry trace context. It is
+// intended for server-level accounting such as RED metrics.
+func WithOuterMiddleware(middlewares ...middleware.Middleware) Option {
+	return func(config *config) {
+		config.outerMiddlewares = append(config.outerMiddlewares, middlewares...)
 	}
 }

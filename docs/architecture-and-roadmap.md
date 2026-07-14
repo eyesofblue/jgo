@@ -1,10 +1,81 @@
 # JGO 架构设计与实施路线
 
-> 状态：`v0.2.0` 已于 2026-07-14 发布，P2 已完成并形成 `v0.3.0` 发布候选
+> 状态：`v0.3.0` 已发布，当前主干进行 `v0.4.0` 生产化 P0 改造
 > Go module：`github.com/eyesofblue/jgo`  
 > 最低 Go 版本：`1.24`
 > License：`Apache-2.0`  
 > 文档目标：记录 JGO 的已确认需求、架构边界、脚手架命令、执行步骤和验收标准。
+
+> 说明：后文 P2 章节保留 v0.3.0 当时的命令和实现记录，仅用于历史追溯；当前有效命令与架构以本节、README 和 `docs/command-reference.md` 为准。
+
+## 0. v0.4.0 生产化 P0 决策
+
+### 0.1 服务类型与协议来源解耦
+
+- `web/grpc/mixed/proto` 都创建空业务骨架，不再生成 Echo、Greeter 或默认 Service。
+- 本地协议使用 `jgo pb service add`、`jgo pb method add`、`jgo pb generate`。
+- 公共协议运行时角色使用 Service 粒度的 `jgo rpc server/client bind|unbind`。
+- grpc/mixed 可以只绑定公共协议、只拥有本地协议，或同时使用两者；不存在 `local/external/hybrid` 项目模式参数。
+- `jgo generate` 协调 HTTP、本地 protobuf 和 `.jgo/rpc.json` 外部绑定；空项目成功 no-op。
+- 旧 `rpc pbservice/pbapi/generate/server add/client add` 入口全部删除，不保留兼容别名。
+
+### 0.2 协议创建与版本
+
+- 空项目第一次 `pb service add` 默认创建 `api/proto/<project>/v1/service.proto` 和 `<project>.v1` package。
+- `--package company.user.v1` 可以选择已有 package 或创建新业务域；`company.user.v2` 用于不兼容 API 大版本。
+- protobuf `v1/v2` 与 Go module 的 `v0.1.0/v0.2.0` 独立。
+- Response 固定包含非 optional 的 `code=1`、`msg=2`，业务字段从 3 开始。
+- `pb lint` 执行 Buf lint 与 JGO Response 检查；`pb breaking --against` 要求显式基线。生成项目在 PR CI 中自动比较目标分支。
+
+### 0.3 标准 Go module/workspace
+
+- 删除规划中的 `jgo module` 命令组，直接支持 `go mod`、用户维护的 `replace` 和 `go.work`。
+- `--module path@version` 解析发布版本或匹配该版本的显式 replace，不读取 workspace 未发布源码；省略版本只解析活动 workspace 中的本地 module。
+- 正常 generate/bind/doctor 尊重 `go.work`。只有 `jgo new` 的临时原子 staging 目录使用 `GOWORK=off`。
+- `doctor` 展示活动 workspace 与本地 replace，并校验外部 binding manifest、module、Service 和客户端配置；生产验证使用 `GOWORK=off go test ./...`。
+
+### 0.4 绑定生命周期
+
+- bind 粒度是整个 protobuf Service，业务调用粒度仍是 Method。
+- 重复 bind 幂等更新同一 package 的 module 版本，并保留客户端地址、超时、TLS、readiness 配置。
+- unbind 用于低频、永久取消服务职责或客户端依赖；不修改公共协议，不删除用户业务实现。
+- unbind 后执行 tidy 与编译检查，失败回滚。单个 Method 下线通过协议 deprecated/新版本治理，不增加 method unbind。
+
+### 0.5 生产安全
+
+- gRPC Reflection 框架默认关闭，`configs/local.yaml` 显式开启。
+- 服务端 TLS 支持普通 TLS 与 `require_and_verify` mTLS；无效配置直接阻止启动，不降级明文。
+- 核心定义基础设施无关的 `Authenticator`、`Authorizer`、`Principal`；具体 JWT、OAuth 或私有权限中心由用户 hook 实现。
+- YAML 严格拒绝未知字段。
+
+### 0.6 Management、Readiness 与 Metrics
+
+- 所有服务新增独立 Management HTTP Server，默认 `:9091`。
+- `/healthz` 只表示当前进程；`/readyz` 聚合 required/optional 依赖；`/metrics` 暴露 Prometheus。
+- RPC 客户端默认 required readiness；可将非关键依赖显式放宽为 optional。required 依赖不可用时进程仍运行但 readyz 返回 503；registry 收集端强制超时，并把第三方 checker panic 隔离为 NOT_READY，不依赖 checker 正确响应 context 才能安全返回。
+- readiness 是通用注册表，后续数据库、Redis、MQ、服务发现和私有组件实现相同接口。
+- Metrics 提供 HTTP/gRPC RED、Go runtime 与有限业务码；HTTP timeout/panic 和 gRPC 最终映射状态、认证/授权失败均纳入统计；Prometheus 默认本地开启，OTLP Metrics 默认关闭且可同时启用。
+- uid、trace_id、路径参数值、错误消息等高基数字段不得成为 label；未知业务码归一为 `unknown`。
+
+### 0.7 错误码治理与生成边界
+
+- Go `errors.Definition/Catalog` 是错误码唯一来源，检查重复 code/name，并携带独立 HTTP status。
+- 公共错误码可由独立 Go module 暴露 Catalog；服务通过 `MustMergeCatalogs` 合并公共和本地定义，进程初始化时检测跨仓库 code/name 冲突。
+- RPC 业务错误仍返回 Response code/msg 且 gRPC status 为 OK；无法形成 Response 的系统错误使用非 OK status。
+- 未注册下游业务码保留公共 code/msg，但 HTTP 映射为 500 并记录 bounded Metrics。
+- JGO 只覆盖明确 generated 文件；`internal/errcode`、`internal/securityx` 和业务实现属于用户文件。
+- v1.0 前允许 CLI 演进；本次因尚无线上服务彻底删除旧命令。v1.0 前需冻结 CLI、配置格式、manifest 与公开运行时 API，避免上线后大迁移。
+
+### 0.8 生成安全与边界行为
+
+- protobuf 作者命令拒绝 `api/proto` 下的 symlink，避免通过链接修改项目目录外文件。
+- `--package` 只在 package 唯一对应一个文件时自动选择；同一 package 分布在多个文件时必须用 `--file` 明确目标。
+- 项目名以数字开头、protobuf package 是 Go 关键字等情况会生成合法的 protobuf/Go package；无法安全推导时直接报错。
+- Service/RPC 组合产生相同业务方法名或相同 service 文件名时，在写文件前拒绝生成，不以覆盖顺序决定结果。
+- `.jgo/rpc.json` 严格拒绝未知字段、重复 binding、客户端 Go 字段碰撞和不适用于当前项目类型的 server binding。
+- bind/unbind 先生成再编译，失败恢复 manifest、go.mod/go.sum、配置和所有 JGO 管理文件；用户业务实现始终不被删除。
+- Readiness 收集端执行硬超时并隔离 checker panic；返回给 `/readyz` 的错误不会包含 panic 值或堆栈。
+- Management、HTTP 和 gRPC 组件均禁止重复启动；注册或启动异常必须能够进入有界关闭流程。
 
 ## 1. 项目目标
 
@@ -144,9 +215,9 @@ protobuf 是 gRPC 接口的唯一契约来源。
 - protobuf 工程统一使用 Buf 组织。
 - `buf lint` 负责 `.proto` 契约校验。
 - `buf generate` 负责调用固定版本的 protobuf Go 插件生成代码。
-- `jgo rpc generate` 封装 Buf 流程，用户日常不需要直接组合 protobuf 生成命令。
+- `jgo pb generate` 封装本地协议的 Buf 流程；`jgo generate` 在此基础上协调 HTTP、本地 protobuf 和外部 RPC binding，用户日常不需要直接组合底层生成命令。
 - `jgo tools install` 使用当前 Go 环境安装锁定工具，`jgo tools check` 检查路径、版本、构建 Go 版本和可执行性。
-- `jgo doctor` 在 gRPC/mixed 项目中复用工具检查。
+- `jgo doctor` 只在项目实际存在本地 `.proto` 时检查 Buf 工具；external-only gRPC/mixed 服务不要求安装 Buf。
 - JGO 不静默修改用户机器环境；工具缺失时输出明确安装指引。
 - Buf、`protoc-gen-go` 和 `protoc-gen-go-grpc` 的版本必须固定，并兼容 Go 1.24。
 
@@ -302,11 +373,12 @@ user-api/
 ```text
 user-rpc/
 ├── cmd/server/main.go
-├── api/proto/user/v1/user.proto
-├── gen/pb/
+├── api/proto/                   # 初始为空；拥有本地协议时再创建
+├── gen/pb/                      # 本地协议生成后出现
 ├── internal/
 │   ├── service/
-│   └── transport/grpc/
+│   ├── rpcclient/               # 公共协议客户端 binding
+│   └── transport/grpc/          # 本地协议与公共协议服务端 adapter
 ├── buf.yaml
 ├── buf.gen.yaml
 ├── configs/local.yaml
@@ -321,10 +393,10 @@ user-service/
 ├── cmd/server/main.go
 ├── api/
 │   ├── http/openapi.yaml
-│   └── proto/user/v1/user.proto
+│   └── proto/                   # 初始为空；本地协议按需创建
 ├── gen/
 │   ├── http/
-│   └── pb/
+│   └── pb/                      # 本地协议生成后出现
 ├── internal/
 │   ├── service/                 # HTTP/gRPC 共用
 │   └── transport/
@@ -389,9 +461,17 @@ jgo api add ListUsers \
 ### 7.3 gRPC API
 
 ```bash
-jgo rpc pbapi add GetUser --service UserService
-jgo rpc generate
+# 项目自有协议
+jgo pb service add UserService
+jgo pb method add GetUser --service UserService
+jgo pb generate
+
+# 公共协议运行时角色
+jgo rpc server bind UserService --module example.com/company-api@v1.0.0
+jgo rpc client bind UserService --module example.com/company-api@v1.0.0 --name user
 ```
+
+协议作者命令属于 `jgo pb`；`jgo rpc` 只管理服务端/客户端对公共 protobuf Service 的运行时绑定。两者可以在 grpc/mixed 项目中同时使用。
 
 ### 7.4 工程命令
 

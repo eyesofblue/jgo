@@ -53,7 +53,7 @@ for project_type in web grpc mixed proto; do
   if [[ "${project_type}" == "proto" ]]; then
     ! grep -q 'github.com/eyesofblue/jgo' "${project_root}/go.mod"
   else
-    grep -q 'github.com/eyesofblue/jgo v0.3.0' "${project_root}/go.mod"
+    grep -q 'github.com/eyesofblue/jgo v0.4.0' "${project_root}/go.mod"
   fi
 
   if [[ "${project_type}" == "web" || "${project_type}" == "mixed" ]]; then
@@ -86,7 +86,9 @@ for project_type in web grpc mixed proto; do
     else
       service_name="DemoMixedService"
     fi
-    "${temporary_root}/jgo" rpc pbapi add GetUser \
+    "${temporary_root}/jgo" pb service add "${service_name}" \
+      --root "${project_root}"
+    "${temporary_root}/jgo" pb method add GetUser \
       --service "${service_name}" \
       --root "${project_root}"
     proto_file="${project_root}/api/proto/${project_name//-/_}/v1/service.proto"
@@ -127,18 +129,23 @@ server_root="${temporary_root}/demo-grpc"
 caller_root="${temporary_root}/demo-web"
 grpc_address="127.0.0.1:$((20000 + RANDOM % 10000))"
 http_address="127.0.0.1:$((30000 + RANDOM % 10000))"
+server_management_address="127.0.0.1:$((40000 + RANDOM % 5000))"
+caller_management_address="127.0.0.1:$((45000 + RANDOM % 5000))"
 
 cp "${repository_root}/scripts/testdata/e2e_service.proto" \
   "${protocol_root}/api/proto/demo_proto/v1/service.proto"
-"${temporary_root}/jgo" rpc generate --root "${protocol_root}"
+"${temporary_root}/jgo" pb generate --root "${protocol_root}"
 
 (
   cd "${server_root}"
   go mod edit -replace=example.com/demo-proto="${protocol_root}"
-  "${temporary_root}/jgo" rpc server add DemoProtoService \
+  "${temporary_root}/jgo" rpc server bind DemoProtoService \
     --module example.com/demo-proto@v0.1.0
-  "${temporary_root}/jgo" rpc server add AdminService \
+  "${temporary_root}/jgo" rpc server bind AdminService \
     --module example.com/demo-proto@v0.1.0
+  "${temporary_root}/jgo" doctor
+  server_bindings="$("${temporary_root}/jgo" list)"
+  [[ "${server_bindings}" == *external-server*DemoProtoService* ]]
   cp "${repository_root}/scripts/testdata/e2e_grpc_get_user.go" \
     internal/service/demo_proto_service_get_user.go
   grep -q 'RegisterDemoProtoServiceServer' internal/transport/grpc/external.gen.go
@@ -152,19 +159,23 @@ cp "${repository_root}/scripts/testdata/e2e_service.proto" \
 (
   cd "${caller_root}"
   go mod edit -replace=example.com/demo-proto="${protocol_root}"
-  "${temporary_root}/jgo" rpc client add DemoProtoService \
+  "${temporary_root}/jgo" rpc client bind DemoProtoService \
     --module example.com/demo-proto@v0.1.0 \
     --name demo_proto \
     --address "${grpc_address}"
-  "${temporary_root}/jgo" rpc client add DemoProtoService \
+  "${temporary_root}/jgo" rpc client bind DemoProtoService \
     --module example.com/demo-proto@v0.1.0 \
     --name demo_proto_backup \
     --address "${grpc_address}"
+  "${temporary_root}/jgo" doctor
+  client_bindings="$("${temporary_root}/jgo" list)"
+  [[ "${client_bindings}" == *external-client*demo_proto* ]]
   cp "${repository_root}/scripts/testdata/e2e_web_get_user.go" \
     internal/service/get_user.go
   grep -q 'DemoProto .*DemoProtoServiceClient' internal/rpcclient/clients.gen.go
   grep -q 'demo_proto:' configs/local.yaml
   grep -q 'demo_proto_backup:' configs/local.yaml
+  test "$(grep -c 'readiness: required' configs/local.yaml)" = "2"
   test "$(grep -c 'example.com/demo-proto/gen/pb/demo_proto/v1' internal/rpcclient/clients.gen.go)" = "1"
   go test ./...
   go build ./...
@@ -184,19 +195,19 @@ caller_log="${temporary_root}/web-caller.log"
 
 (
   cd "${server_root}"
-  exec "${temporary_root}/grpc-server" --config configs/local.yaml --grpc-address "${grpc_address}"
+  exec "${temporary_root}/grpc-server" --config configs/local.yaml --grpc-address "${grpc_address}" --management-address "${server_management_address}"
 ) >"${server_log}" 2>&1 &
 server_pid=$!
 
 (
   cd "${caller_root}"
-  exec "${temporary_root}/web-caller" --config configs/local.yaml --http-address "${http_address}"
+  exec "${temporary_root}/web-caller" --config configs/local.yaml --http-address "${http_address}" --management-address "${caller_management_address}"
 ) >"${caller_log}" 2>&1 &
 caller_pid=$!
 
 health_status=""
 for _ in $(seq 1 60); do
-  health_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://${http_address}/healthz" 2>/dev/null || true)"
+  health_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://${caller_management_address}/healthz" 2>/dev/null || true)"
   if [[ "${health_status}" == "200" ]]; then break; fi
   sleep 0.1
 done
@@ -235,7 +246,7 @@ grep -q 'DeadlineExceeded' "${caller_log}"
 kill "${server_pid}"
 wait "${server_pid}" 2>/dev/null || true
 server_pid=""
-health_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://${http_address}/healthz")"
+health_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://${caller_management_address}/healthz")"
 test "${health_status}" = "200"
 unavailable_status="$(curl -sS -o "${temporary_root}/unavailable.json" -w '%{http_code}' \
   "http://${http_address}/get_user?uid=12345" 2>/dev/null || true)"

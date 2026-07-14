@@ -3,6 +3,7 @@ package command
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +24,23 @@ func TestDoctorPassesForGeneratedWebProject(t *testing.T) {
 	}
 }
 
+func TestDoctorRejectsBrokenExternalBindingManifest(t *testing.T) {
+	for name, manifest := range map[string]string{
+		"invalid JSON":  "{not-json",
+		"unknown field": `{"version":1,"unexpected":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := generatedWebProject(t)
+			writeCommandContract(t, root, ".jgo/rpc.json", manifest)
+			var output bytes.Buffer
+			err := Execute(&output, &output, []string{"doctor", "--root", root})
+			if err == nil || !strings.Contains(output.String(), "FAIL  external RPC bindings") {
+				t.Fatalf("doctor error = %v\n%s", err, output.String())
+			}
+		})
+	}
+}
+
 func TestGenerateCommandDetectsWebContract(t *testing.T) {
 	root := generatedWebProject(t)
 	var output bytes.Buffer
@@ -36,6 +54,41 @@ func TestGenerateCommandDetectsWebContract(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
 			t.Fatalf("generated %s: %v", relative, err)
 		}
+	}
+}
+
+func TestEmptyGRPCProjectDoesNotRequireBuf(t *testing.T) {
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "empty-grpc")
+	_, err = projectgen.Generate(projectgen.Config{Name: "empty-grpc", Module: "example.com/empty-grpc", Type: projectgen.TypeGRPC, TargetDir: root, JGOReplace: repositoryRoot, SkipTidy: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goBinary, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(goBinary, filepath.Join(bin, "go")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	var output bytes.Buffer
+	if err := Execute(&output, &output, []string{"generate", "--root", root}); err != nil {
+		t.Fatalf("generate = %v", err)
+	}
+	if !strings.Contains(output.String(), "no local protobuf contracts") {
+		t.Fatalf("output = %q", output.String())
+	}
+	output.Reset()
+	if err := Execute(&output, &output, []string{"doctor", "--root", root}); err != nil {
+		t.Fatalf("doctor = %v\n%s", err, output.String())
+	}
+	if strings.Contains(output.String(), "buf") || strings.Contains(output.String(), "protoc-gen") {
+		t.Fatalf("empty project checked protobuf tools:\n%s", output.String())
 	}
 }
 
@@ -74,6 +127,17 @@ func TestBuildAndRunCommands(t *testing.T) {
 	binary := filepath.Join(root, "bin", filepath.Base(root))
 	if info, err := os.Stat(binary); err != nil || !info.Mode().IsRegular() {
 		t.Fatalf("binary %s: info=%v error=%v", binary, info, err)
+	}
+}
+
+func TestParseRunArgumentsForwardsServiceFlags(t *testing.T) {
+	root, forwarded, help, err := parseRunArguments(".", []string{"--root", "/tmp/service", "--config", "configs/prod.yaml", "--grpc-address=:9191"})
+	if err != nil || help || root != "/tmp/service" {
+		t.Fatalf("parse = %q %v %v %v", root, forwarded, help, err)
+	}
+	want := []string{"--config", "configs/prod.yaml", "--grpc-address=:9191"}
+	if strings.Join(forwarded, "|") != strings.Join(want, "|") {
+		t.Fatalf("forwarded = %v", forwarded)
 	}
 }
 

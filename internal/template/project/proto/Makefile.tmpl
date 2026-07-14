@@ -1,6 +1,6 @@
 export GOTOOLCHAIN := local
 
-.PHONY: fmt test vet build check doctor generate tools rpc-add
+.PHONY: fmt test vet build check doctor generate tools pb-lint pb-breaking
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -20,10 +20,13 @@ doctor:
 	jgo doctor
 
 generate:
-	jgo rpc generate
+	jgo generate
 
 tools:
 	jgo tools install
 
-rpc-add:
-	@echo 'usage: jgo rpc pbapi add <RPCName> --service {{.ServiceName}}'
+pb-lint:
+	jgo pb lint
+
+pb-breaking:
+	@echo 'usage: jgo pb breaking --against ''.git#branch=main'''

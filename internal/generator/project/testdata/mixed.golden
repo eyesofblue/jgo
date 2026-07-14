@@ -1,9 +1,9 @@
+.github/workflows/protobuf.yml
 .gitignore
 Makefile
 README.md
 api/http/model/doc.go
 api/http/openapi.yaml
-api/proto/demo_app/v1/service.proto
 buf.gen.yaml
 buf.yaml
 cmd/server/main.go
@@ -11,7 +11,10 @@ configs/local.yaml
 go.mod
 internal/config/config.go
 internal/config/config_test.go
+internal/errcode/catalog.go
+internal/managementx/management.go
 internal/rpcclient/clients.gen.go
+internal/securityx/security.go
 internal/service/service.go
 internal/tooldeps/deps.go
 internal/transport/grpc/external.gen.go

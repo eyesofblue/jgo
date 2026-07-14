@@ -161,6 +161,34 @@ func TestGenerateRejectsIncompleteServiceLayoutBeforeRunningTools(t *testing.T) 
 	}
 }
 
+func TestDiscoverGeneratedServicesRejectsServiceFileNameCollision(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "gen", "pb", "demo", "v1", "service_grpc.pb.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := `package demov1
+import "context"
+type DemoServiceServer interface {
+	GetURL(context.Context, *GetURLRequest) (*GetURLResponse, error)
+	GetUrl(context.Context, *GetUrlRequest) (*GetUrlResponse, error)
+}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "internal", "service"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	services, err := discoverGeneratedServices(root, "example.com/demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createServiceStubs(root, services); err == nil || !strings.Contains(err.Error(), "same service file") {
+		t.Fatalf("createServiceStubs() error = %v", err)
+	}
+}
+
 func TestGenerateRejectsNonstandardResponseBeforeBufGenerate(t *testing.T) {
 	root := generatedProjectRoot(t)
 	contract := filepath.Join(root, "api", "proto", "demo", "v1", "service.proto")

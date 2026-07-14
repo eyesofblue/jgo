@@ -115,7 +115,7 @@ type UpdateUserRequest struct {
 	if err != nil {
 		t.Fatalf("read generated routes: %v", err)
 	}
-	if !strings.Contains(string(routes), "var body model.UpdateUserRequest") || !strings.Contains(string(routes), "params httpgen.GetUserParams") {
+	if !strings.Contains(string(routes), "var body model.UpdateUserRequest") || !strings.Contains(string(routes), "params httpgen.GetUserParams") || !strings.Contains(string(routes), "response.ObserveRoute(request)") {
 		t.Fatalf("generated routes do not include typed request handling:\n%s", routes)
 	}
 

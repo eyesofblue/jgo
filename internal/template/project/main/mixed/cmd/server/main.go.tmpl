@@ -11,7 +11,9 @@ import (
 	"github.com/eyesofblue/jgo/server/httpx"
 	"github.com/eyesofblue/jgo/telemetry"
 	"{{.Module}}/internal/config"
+	"{{.Module}}/internal/managementx"
 	"{{.Module}}/internal/rpcclient"
+	"{{.Module}}/internal/securityx"
 	"{{.Module}}/internal/service"
 	grpctransport "{{.Module}}/internal/transport/grpc"
 	httptransport "{{.Module}}/internal/transport/http"
@@ -61,12 +63,19 @@ func run(arguments []string) error {
 			return err
 		}
 	}
+	managementServer, serviceMetrics, err := managementx.New(context.Background(), configuration, rpcManager, logger)
+	if err != nil { return err }
+	if err := application.Add(serviceMetrics); err != nil { return err }
+	if err := application.Add(managementServer); err != nil { return err }
 	applicationService := service.New(rpcClients)
+	authenticator, authorizer, err := securityx.New(configuration)
+	if err != nil { return err }
 
 	httpServer, err := httpx.New(
 		httpx.WithAddress(configuration.Service.HTTPAddress),
 		httpx.WithLogger(logger),
 		httpx.WithHandler(httptransport.NewHandler(applicationService)),
+		httpx.WithOuterMiddleware(serviceMetrics.HTTPMiddleware),
 	)
 	if err != nil {
 		return err
@@ -74,7 +83,11 @@ func run(arguments []string) error {
 	grpcServer, err := grpcx.New(
 		grpcx.WithAddress(configuration.Service.GRPCAddress),
 		grpcx.WithLogger(logger),
-		grpcx.WithReflection(true),
+		grpcx.WithReflection(configuration.GRPC.Reflection.Enabled),
+		grpcx.WithTLS(grpcx.TLSConfig{Enabled: configuration.GRPC.TLS.Enabled, CertFile: configuration.GRPC.TLS.CertFile, KeyFile: configuration.GRPC.TLS.KeyFile, ClientAuth: configuration.GRPC.TLS.ClientAuth, ClientCAFile: configuration.GRPC.TLS.ClientCAFile}),
+		grpcx.WithUnaryInterceptors(serviceMetrics.UnaryServerInterceptor()),
+		grpcx.WithAuthenticator(authenticator),
+		grpcx.WithAuthorizer(authorizer),
 		grpcx.WithRegister(grpctransport.Register(applicationService)),
 	)
 	if err != nil {

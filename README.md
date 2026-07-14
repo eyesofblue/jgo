@@ -1,351 +1,271 @@
 # JGO
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+English | [简体中文](README.zh-CN.md)
 
-JGO is a standalone Go service framework and project scaffolding tool for HTTP/JSON and gRPC/protobuf services.
+JGO is a standalone Go service framework and project scaffold for RPC-style HTTP/JSON APIs and gRPC/protobuf. It has no mandatory private-infrastructure dependency; databases, Redis, messaging, discovery, and identity systems integrate through standard extension points.
 
-Runtime support, project scaffolding, contract generation, unified debugging, and developer workflow commands are available. Start with the [documentation index](docs/README.md) or the [quick-start guide](docs/getting-started.md).
+Module: `github.com/eyesofblue/jgo`. The current main branch targets `v0.4.0`.
 
-## Module
+## Requirements and installation
 
-```text
-github.com/eyesofblue/jgo
-```
-
-The current release is `v0.3.0`; see [CHANGELOG.md](CHANGELOG.md).
-
-## Prerequisites
-
-| Project type | Required software |
-| --- | --- |
-| `web` | Go `1.24.0` or later |
-| `grpc` | Go `1.24.0` or later, Buf `1.46.0`, `protoc-gen-go` `1.36.7`, `protoc-gen-go-grpc` `1.5.1` |
-| `mixed` | The same Go and protobuf toolchain as `grpc` |
-| `proto` | The same Go and protobuf toolchain as `grpc`; no JGO runtime dependency |
-
-JGO has no required database, Redis, message queue, service registry, configuration center, or other private infrastructure. Private infrastructure can be integrated later through application components and HTTP/gRPC middleware.
-
-Make sure the Go binary directory is in `PATH`:
+- Go `1.24.0` or newer for every project.
+- Buf `1.46.0`, `protoc-gen-go` `1.36.7`, and `protoc-gen-go-grpc` `1.5.1` only when authoring or generating local protobuf contracts.
+- An external-only gRPC project does not need Buf.
 
 ```bash
-export PATH="$(go env GOPATH)/bin:$PATH"
-```
-
-## Install
-
-Install a published version:
-
-```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@v0.3.0
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.0
 jgo --version
-```
 
-Use `@latest` when you intentionally want the newest published release.
-
-For JGO framework development, you can also clone the repository and build from source:
-
-```bash
-go build -trimpath -o bin/jgo ./cmd/jgo
-./bin/jgo --version
-```
-
-For gRPC, mixed, and proto projects, install the locked generators once per Go development environment:
-
-```bash
+# Once per Go environment that develops local protobuf contracts
 jgo tools install
 jgo tools check
 ```
 
-JGO uses `GOTOOLCHAIN=local` and never downloads or switches Go toolchains silently. Exact module and tool versions are documented in [docs/dependencies.md](docs/dependencies.md).
+JGO uses `GOTOOLCHAIN=local`; it never silently downloads or switches Go. `jgo new` runs `go mod tidy` and creates `go.sum` unless `--skip-tidy` is explicitly used.
 
-## New project: create a service and its first API
-
-Generated service projects default to `github.com/eyesofblue/jgo v0.3.0`; proto projects have no JGO runtime dependency. All project types default to the active `go env GOVERSION`; use `--go-version` to override it. Project creation runs `go mod tidy` and writes `go.sum`; offline environments can use `--skip-tidy`. During local framework development, add `--jgo-replace /absolute/path/to/jgo`; do not commit a machine-specific replacement for normal users.
-
-### Web service
-
-Create the project, define the request/response models, add the API, and then generate code:
+## Empty project skeletons
 
 ```bash
-jgo new user-web \
-  --module example.com/user-web \
-  --type web
-cd user-web
+jgo new <name> --module <module> --type <web|grpc|mixed|proto>
+```
 
-# Define the UpdateUserRequest and UserInfo Go structs under api/http/model/.
-jgo api add UpdateUser \
-  --method POST \
-  --path /update_user \
+- `web`: runnable HTTP service with an empty OpenAPI contract.
+- `grpc`: runnable empty gRPC server with no Echo and no local proto.
+- `mixed`: empty HTTP plus empty gRPC server.
+- `proto`: valid empty public protocol module with no server and no JGO runtime dependency.
+
+Project type and protobuf source are independent. A grpc/mixed service may use only shared protocols, own local protocols, or use both.
+
+```bash
+jgo generate # safe no-op when no contract or binding exists
+jgo list
+jgo doctor
+go test ./...
+```
+
+## HTTP APIs
+
+JGO keeps RPC-style routes such as `GET /get_user?uid=12345` and `POST /update_user`. Complex requests and responses use Go structs under `api/http/model`:
+
+```bash
+jgo api add UpdateUser --method POST --path /update_user \
   --request-params UpdateUserRequest \
   --response-data UserInfo
-
 jgo api generate
-# Implement the newly generated business method under internal/service/.
-go test ./...
-jgo run
 ```
 
-A new Web project includes `/hello` and health checks, but `api/http/openapi.yaml` initially has no business operations. Normally, run `jgo api add` before generation instead of running `jgo generate` immediately after `jgo new`. Web services listen on `:8080` by default.
-
-HTTP responses use the stable `{"code":0,"msg":"","data":...}` envelope:
+Responses always use the envelope:
 
 ```json
-{"code": 0, "msg": "", "data": {"uid": 12345, "name": "Albert"}}
+{"code": 0, "msg": "", "data": {"uid": 12345}}
 ```
 
-Business success is `code: 0`; HTTP status represents the transport result, while the integer `code` represents the business result.
+HTTP status and business code are separate. Business success is always code `0`.
 
-### gRPC service
-
-`jgo tools install` installs the locked Buf and protobuf generators into the current Go development environment. Run it once per environment, not once per project:
+## Local protobuf contracts
 
 ```bash
-jgo new user-rpc \
-  --module example.com/user-rpc \
-  --type grpc
-cd user-rpc
-
-jgo tools install # Run the first time this environment uses JGO gRPC.
-jgo doctor
-jgo rpc pbapi add GetUser --service UserRpcService
-# Edit GetUserRequest; GetUserResponse already has code/msg, so add business fields from number 3.
-jgo rpc generate
-# Implement the generated UserRpcServiceGetUser method under internal/service/.
-go test ./...
-jgo run
+jgo pb service add UserService
+jgo pb method add GetUser --service UserService
+# Add request fields and response business fields from field number 3.
+jgo pb generate
 ```
 
-The initial protobuf service name is derived from the project name; for example, `user-rpc` becomes `UserRpcService` with a sample `Echo` RPC. Keep or remove the sample when establishing the real contract. The gRPC Health service is always registered, and its address is read from `configs/local.yaml`.
-
-JGO locks Buf `1.46.0`, `protoc-gen-go` `1.36.7`, and `protoc-gen-go-grpc` `1.5.1`. gRPC business methods use `<Service><RPC>` names, such as `UserRpcServiceGetUser`; public protobuf service and RPC names remain unchanged.
-
-Every JGO RPC response uses non-optional `int32 code = 1` and `string msg = 2`; business success is `0`. User-defined business fields start at number `3` and use `optional` only when they need to distinguish absence from an explicit zero value. `jgo call grpc` displays zero values such as `0`, `""`, and `false` for ordinary fields while still omitting unset optional/message fields.
-
-`jgo doctor` and generation commands enforce this convention for local and cross-file RPC responses and fail when the standard `code/msg` fields are missing.
-
-When a business method explicitly returns `jgo/errors.Error`, the generated gRPC transport builds a Response containing its `code/msg` and keeps the gRPC status `OK`. Unknown errors, panics, cancellation, and timeouts that cannot produce a valid business Response use a non-`OK` gRPC status. Business codes are not duplicated in gRPC status details.
-
-### Shared protobuf module
-
-Use a `proto` project when multiple services and callers must share one versioned contract module. The project name is arbitrary; `company-api` is only an example:
+The first Service creates `api/proto/<project>/v1/service.proto` and defaults to protobuf package `<project>.v1`. Choose or create a domain/version explicitly:
 
 ```bash
-jgo new company-api \
-  --module example.com/company-api \
-  --type proto
+jgo pb service add OrderService --package company.order.v1
+jgo pb service add UserService --package company.user.v2
+```
+
+If one package spans multiple proto files, select the destination explicitly with `--file`; JGO never guesses between them. Symlinks under `api/proto` are rejected so authoring commands cannot modify contracts outside the project tree.
+
+Every response contains non-optional `int32 code = 1` and `string msg = 2`. Protocol checks:
+
+```bash
+jgo pb lint
+jgo pb breaking --against '.git#branch=main'
+```
+
+Generated proto/grpc/mixed projects include a pull-request workflow that compares contracts with the PR base branch. Breaking changes require a new protobuf package such as `company.user.v2`.
+
+## Shared protocol Service bindings
+
+Create and publish a shared protocol module:
+
+```bash
+jgo new company-api --module example.com/company-api --type proto
 cd company-api
-
-jgo tools install # Skip when already installed in this Go environment.
-jgo rpc pbapi add GetUser --service CompanyApiService
-# Add another protobuf Service later when the module covers a new domain:
-jgo rpc pbservice add OrderService
-# Complete request and response fields in api/proto/company_api/v1/service.proto.
-jgo rpc generate
-jgo list
-go test ./...
+jgo pb service add UserService --package company.user.v1
+jgo pb method add GetUser --service UserService
+jgo pb generate
 ```
 
-A proto project initially retains the generated `CompanyApiService.Echo` example. Use `rpc pbservice add` to add more Services to the same repository; do not run `jgo new` again. It has no `cmd/server`, configuration, business layer, or JGO runtime dependency. Generation only updates the public Go packages under `gen/pb`. Commit both `.proto` and `gen/pb`, tag the protocol module, then import packages such as `example.com/company-api/gen/pb/company_api/v1` from server and caller projects. `jgo run` and the server-oriented `jgo build` intentionally reject proto projects.
-
-Connect a published Service to a gRPC or mixed server:
+Bind an entire Service on a server or client:
 
 ```bash
-jgo rpc server add UserService \
-  --module example.com/company-api@v0.1.1
-# JGO discovers the unique package, adds the module dependency, generates the
-# server adapter and missing business methods, and runs go mod tidy.
+jgo rpc server bind UserService --module example.com/company-api@v0.1.0
+jgo rpc client bind UserService \
+  --module example.com/company-api@v0.1.0 \
+  --name user --address 127.0.0.1:9090
 ```
 
-Connect a typed client to any web, gRPC, or mixed service:
+`--name` is the stable client config/code identifier. Address, timeout, TLS, and readiness remain editable in YAML. Repeating `bind` is idempotent and updates compatible module versions without overwriting runtime configuration.
+
+Permanent role/dependency cleanup is Service-grained:
 
 ```bash
-jgo rpc client add UserService \
-  --module example.com/company-api@v0.1.1 \
-  --name user \
-  --address 127.0.0.1:9090
+jgo rpc server unbind UserService
+jgo rpc client unbind user
 ```
 
-The generated business service receives the protobuf interface directly as `s.RPC.User`. `client add` writes `rpc_client.user` to `configs/local.yaml` and wires it through `client/grpcx`. The client `--name` is a stable code identifier and cannot be renamed after creation; choose another name by adding a separate client. Runtime values such as address, timeout, and TLS settings remain editable in YAML. Module release versions such as `v0.1.1` do not select protobuf API `v1/v2`: JGO searches all generated packages for the Service. If the same Service exists in multiple packages, specify the exact import with `--package`.
+`unbind` never edits the shared contract or deletes user-owned implementations. A failed post-unbind compile check rolls the mutation back.
 
-### Mixed service
+## Unpublished modules and go.work
 
-A mixed project maintains both OpenAPI and protobuf contracts while sharing one business layer and application lifecycle:
+Use Go's standard workspace support while changing a protocol, server, and caller together:
 
 ```bash
-jgo new user-service \
-  --module example.com/user-service \
-  --type mixed
-cd user-service
-
-jgo tools install # Skip if the locked tools are already installed in this environment.
-jgo doctor
-# Add the required APIs and complete their structs/proto messages as shown above.
-jgo generate     # Generate both HTTP and gRPC code.
-go test ./...
-jgo run
+go work init
+go work use ./company-api ./user-service ./web-gateway
+jgo rpc server bind UserService --module example.com/company-api
 ```
 
-Mixed projects listen on HTTP `:8080` and gRPC `:9090` by default; YAML, environment variables, or command-line flags can override both addresses.
+A module without `@version` must exist in the active `go.work`; otherwise binding fails. An explicit `@version` never scans unpublished workspace source, but does honor a user-managed `go.mod replace` that matches that version. Other standard Go operations still respect the active workspace. Only `jgo new` uses `GOWORK=off` internally while validating its temporary atomic staging directory.
 
-## Tracing and structured logging
+Verify released dependencies independently with:
 
-Generated projects enable OpenTelemetry Trace Context by default. HTTP and gRPC propagate the standard W3C `traceparent`. OTLP export is disabled by default, so no Collector, Jaeger, or Tempo deployment is required. HTTP responses also expose `X-Trace-ID` for operational troubleshooting.
-
-```yaml
-telemetry:
-  tracing:
-    enabled: true
-    sample_ratio: 0.1
-    exporter:
-      enabled: false
-      endpoint: "127.0.0.1:4317"
-      insecure: true
+```bash
+GOWORK=off go test ./...
 ```
 
-When export is enabled, spans are sent over OTLP/gRPC. With export disabled, trace IDs are still created and propagated, but spans are neither recorded nor sent. Shutdown flushes and closes the tracer provider after the HTTP/gRPC servers stop.
+## Generation and development commands
 
-Use the structured `logx` API for business logs:
+```bash
+jgo api generate   # HTTP only
+jgo pb generate    # local protobuf only
+jgo generate       # HTTP + local protobuf + external bindings
+jgo list           # HTTP, local gRPC, external servers and clients
+jgo doctor         # tools plus external manifest/module/config and workspace diagnostics
+jgo run --config configs/local.yaml
+jgo build
+```
+
+`jgo run` forwards service flags directly; the extra `--` separator is no longer required.
+
+## Business errors
+
+RPC business errors use response `code/msg` with gRPC status `OK`. Network failures, panics, cancellation, and timeouts use non-OK gRPC status.
+
+Business codes are declared in Go:
 
 ```go
-logx.InfoCtx(ctx, "get user completed", "uid", uid)
-logx.ErrorCtx(ctx, "get user failed", "uid", uid, "err", err)
+var UserNotFound = jgoerrors.Define(
+    40401, "USER_NOT_FOUND", "user not found", http.StatusNotFound,
+)
+var Catalog = jgoerrors.MustCatalog(UserNotFound)
 ```
 
-`DebugCtx`, `InfoCtx`, `WarnCtx`, and `ErrorCtx` automatically add `trace_id` and `span_id` from the context. Printf-style `InfoCtxf`/`ErrorCtxf` APIs are intentionally not provided.
+The Catalog rejects duplicate codes/names and owns RPC-code-to-HTTP-status mapping. Unknown downstream business codes retain their public code/message, map to HTTP 500, and use the bounded Metrics label `unknown`.
 
-gRPC business errors still use `response.code/msg` with an `OK` gRPC status. Generated transports attach `jgo.business_code` and `jgo.business_message` to the active span so observability backends can distinguish business failures.
+For cross-service governance, publish shared definitions from a dedicated Go module and merge them during process initialization. Conflicts originating in different repositories then fail immediately:
 
-## Outbound gRPC clients
+```go
+var Catalog = jgoerrors.MustMergeCatalogs(
+    sharedcodes.Catalog,
+    jgoerrors.MustCatalog(UserNotFound),
+)
+```
 
-`client/grpcx` owns named, reusable gRPC connections as an application component. Connections are lazy: an unavailable remote service does not block process startup, and the actual call returns gRPC `Unavailable`. Outbound dependencies do not change `/healthz`, which only reports the health of the current process.
+Web callers convert RPC business responses through that same Catalog instead of maintaining per-handler status switches:
 
-Configure dependencies under `rpc_client`:
+```go
+rpcResponse, err := service.RPC.User.GetUser(ctx, request)
+if err != nil {
+    return nil, err
+}
+if rpcResponse.GetCode() != 0 {
+    return nil, errcode.Catalog.FromCode(int(rpcResponse.GetCode()), rpcResponse.GetMsg())
+}
+return rpcResponse.GetUser(), nil
+```
+
+## Production safety
+
+The framework default for gRPC Reflection is off; `configs/local.yaml` explicitly enables it for local debugging. Server TLS/mTLS is configuration-driven:
+
+```yaml
+grpc:
+  reflection:
+    enabled: true
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+    client_auth: none # or require_and_verify
+    client_ca_file: ""
+```
+
+Invalid certificates or incomplete TLS/mTLS configuration fail startup and never downgrade to plaintext. `internal/securityx/security.go` is the user-owned integration hook for JGO's infrastructure-neutral `Authenticator` and `Authorizer`. Authentication failures return `Unauthenticated`; authorization failures return `PermissionDenied`.
+
+YAML decoding is strict: unknown fields fail startup instead of silently using defaults.
+
+## Management, Metrics, and Readiness
+
+Every service has a separate management listener (`:9091` locally):
+
+```text
+GET /healthz  current-process liveness only
+GET /readyz   required/optional dependency readiness
+GET /metrics  Prometheus RED and Go runtime metrics
+```
+
+RPC clients default to strict readiness. A bound dependency is `required`; explicitly relax non-critical dependencies to `optional`:
 
 ```yaml
 rpc_client:
   user:
-    address: "dns:///user-rpc:9090"
+    address: dns:///user-service:9090
     timeout: 3s
-    tls:
-      enabled: false
-      server_name: ""
-      ca_file: ""
+    readiness: optional
 ```
 
-The generated `rpc client add` wiring uses this runtime automatically. For manual integration, create the manager, obtain a connection, construct the generated protobuf client, and add the manager to the application before serving requests:
+Unavailable dependencies do not prevent process startup. A required dependency makes `/readyz` return 503; the real RPC returns `Unavailable`, and JGO performs no automatic retry. The registry enforces its deadline at collection time and isolates checker panics as `NOT_READY`, so a third-party checker cannot hang or crash `/readyz`. Database, Redis, MQ, and private components can implement the same interface.
+
+Prometheus is enabled locally; OTLP Metrics is optional and may run simultaneously:
+
+```yaml
+telemetry:
+  metrics:
+    otlp:
+      enabled: false
+      endpoint: 127.0.0.1:4317
+      insecure: true
+```
+
+JGO exposes HTTP/gRPC request rate, errors, latency, bounded business codes, and Go runtime metrics. IDs, trace IDs, and error messages are never metric labels.
+
+## Tracing and structured logs
+
+HTTP and gRPC propagate W3C `traceparent`; HTTP returns `X-Trace-ID`. OTLP trace export is disabled until configured.
 
 ```go
-clients, err := clientgrpcx.New(map[string]clientgrpcx.Config{
-    "user": {
-        Address: configuration.RPCClient["user"].Address,
-        Timeout: configuration.RPCClient["user"].Timeout.Duration,
-    },
-})
-if err != nil {
-    return err
-}
-connection, err := clients.Conn("user")
-if err != nil {
-    return err
-}
-userClient := userv1.NewUserServiceClient(connection)
-application.Add(clients)
+logx.InfoCtx(ctx, "get user completed", "uid", uid, "user", userInfo)
+logx.ErrorCtx(ctx, "get user failed", "uid", uid, "err", err)
 ```
 
-The default unary timeout is 3 seconds. A named client can override it; when the call context already has a deadline, the earlier of that deadline and the client timeout wins. TLS can use system roots or an additional CA file. JGO disables configured gRPC retries and does not retry business calls automatically. OpenTelemetry trace context is propagated, and transport failures are logged through the context-aware structured logger.
+`DebugCtx`, `InfoCtx`, `WarnCtx`, and `ErrorCtx` attach `trace_id` and `span_id` from context.
 
-## Existing service: add an API
-
-### Add an HTTP API
+## Verification and docs
 
 ```bash
-# 1. Add or reuse request and response Go structs under api/http/model/.
-# 2. Add the operation to the OpenAPI contract.
-jgo api add GetUser \
-  --method GET \
-  --path /get_user \
-  --request uid:int64:required:query \
-  --response-data UserInfo
-
-# 3. Regenerate only the HTTP code.
-jgo api generate
-# 4. Implement the new business method; existing methods are preserved.
+gofmt -w .
 go test ./...
+go vet ./...
+go build ./cmd/jgo
 ```
 
-### Add a gRPC API
-
-For example, add `GetUser` to an existing `UserService` that already has other RPCs:
-
-```bash
-jgo doctor       # Verify the locked tool versions in the current environment.
-jgo rpc pbapi add GetUser --service UserService
-# Edit the request; the response already has code=1/msg=2, so add business fields from number 3.
-jgo rpc generate
-# Implement the generated UserServiceGetUser method.
-go test ./...
-```
-
-If the same service name occurs in multiple proto files, select one with `--file api/proto/.../service.proto`. `jgo rpc generate` regenerates protobuf and transport code but never overwrites existing business methods.
-
-Choose a generation command according to the changed contracts:
-
-| Command | Scope |
-| --- | --- |
-| `jgo api generate` | HTTP/OpenAPI code only |
-| `jgo rpc generate` | gRPC/protobuf code only |
-| `jgo generate` | All HTTP and gRPC code in the project; useful for mixed projects and CI |
-
-## Debug APIs
-
-Use the same JSON input for both protocols. JGO reads OpenAPI or protobuf descriptors and does not generate one-off debug programs:
-
-```bash
-jgo list
-jgo call http GetUser --addr http://127.0.0.1:8080 --data '{"uid":12345}'
-jgo call grpc UserRpcService.Echo --addr 127.0.0.1:9090 --data '{"message":"hello"}'
-```
-
-Both call commands support repeatable `--header 'Name: Value'` metadata and `--timeout`. gRPC prefers server Reflection and automatically falls back to protobuf files under `api/proto/`.
-
-A generated project's README documents the stable workflow instead of duplicating an API inventory that can become stale. OpenAPI/proto files are the contract source of truth; use `jgo list` to inspect current HTTP and gRPC interfaces.
-
-## Developer workflow
-
-```bash
-jgo doctor
-jgo generate
-jgo list
-jgo run
-jgo build
-```
-
-Generate Bash or Zsh completion with `jgo completion bash` and `jgo completion zsh`. The versioning and release checklist is documented in [docs/releasing.md](docs/releasing.md).
-
-```bash
-jgo --version
-```
-
-## Development verification
-
-Run the complete local quality gate from the repository root:
-
-```bash
-make tools
-make ci
-```
-
-This runs formatting checks, unit tests, race tests, `go vet`, CLI build, and real checks for web, gRPC, mixed, and proto projects. The generation check also starts an independently generated proto module, gRPC server, and Web caller to verify end-to-end trace propagation, the 3-second client timeout, `Unavailable` behavior, and process-only `/healthz` semantics.
-
-## Documentation
-
-- [Documentation index](docs/README.md)
-- [Installation and quick start](docs/getting-started.md)
-- [CLI command reference](docs/command-reference.md)
-- [Dependencies and locked versions](docs/dependencies.md)
-- [Web, gRPC, mixed, and proto examples](docs/examples.md)
-- [Architecture and implementation record](docs/architecture-and-roadmap.md)
-- [Release process](docs/releasing.md)
+See the [documentation index](docs/README.md), [getting started guide](docs/getting-started.md), [CLI reference](docs/command-reference.md), [dependencies](docs/dependencies.md), and [architecture knowledge base](docs/architecture-and-roadmap.md).
 
 ## License
 

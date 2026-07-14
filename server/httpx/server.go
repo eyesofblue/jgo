@@ -63,12 +63,17 @@ func New(opts ...Option) (*Server, error) {
 			timeoutmw.New(config.requestTimeout),
 			recovery.New(config.logger),
 		)
+		// Server observers wrap timeout/recovery while remaining inside the
+		// OpenTelemetry handler so measurements retain the active trace context.
+		handler = middleware.Chain(handler, config.outerMiddlewares...)
 		handler = otelhttp.NewHandler(handler, config.name,
 			otelhttp.WithPropagators(telemetry.Propagator()),
 			otelhttp.WithSpanNameFormatter(func(_ string, request *http.Request) string {
 				return request.Method + " " + request.URL.Path
 			}),
 		)
+	} else {
+		handler = middleware.Chain(handler, config.outerMiddlewares...)
 	}
 
 	return &Server{

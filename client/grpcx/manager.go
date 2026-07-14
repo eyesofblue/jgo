@@ -16,6 +16,7 @@ import (
 	"github.com/eyesofblue/jgo/telemetry"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -187,6 +188,24 @@ func (m *Manager) Conn(name string) (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("%w: %s", ErrUnknownClient, name)
 	}
 	return connection, nil
+}
+
+// CheckReadiness reports the current state of one lazy connection. IDLE
+// connections are asked to connect, but the check never blocks on network I/O.
+func (m *Manager) CheckReadiness(_ context.Context, name string) error {
+	connection, err := m.Conn(name)
+	if err != nil {
+		return err
+	}
+	state := connection.GetState()
+	if state == connectivity.Idle {
+		connection.Connect()
+		return fmt.Errorf("grpc client %s is IDLE; connection started", name)
+	}
+	if state != connectivity.Ready {
+		return fmt.Errorf("grpc client %s is %s", name, state)
+	}
+	return nil
 }
 
 // Start waits until the application is canceled or the manager is stopped.

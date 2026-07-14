@@ -1,0 +1,13 @@
+// Package securityx is the user-owned integration point for authentication
+// and authorization. Replace the nil implementations with public or private
+// infrastructure adapters without changing generated transport code.
+package securityx
+
+import (
+	"github.com/eyesofblue/jgo/security"
+	"{{.Module}}/internal/config"
+)
+
+func New(config.Config) (security.Authenticator, security.Authorizer, error) {
+	return nil, nil, nil
+}

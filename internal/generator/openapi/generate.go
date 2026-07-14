@@ -229,6 +229,7 @@ func renderRouteMethod(output *bytes.Buffer, operation Operation) {
 		fmt.Fprintf(output, ", params httpgen.%sParams", operation.Name)
 	}
 	output.WriteString(") {\n")
+	output.WriteString("\tresponse.ObserveRoute(request)\n")
 	if operation.HasRequest() {
 		requestType := operation.ServiceRequestType()
 		if operation.RequestType == "" {

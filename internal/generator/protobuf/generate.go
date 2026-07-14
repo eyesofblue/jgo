@@ -90,6 +90,7 @@ type ServiceStub struct {
 type GenerateResult struct {
 	CreatedStubs []ServiceStub
 	ProtocolOnly bool
+	Empty        bool
 }
 
 // Generate lints protobuf contracts, invokes Buf, and updates JGO's gRPC adapters.
@@ -112,6 +113,50 @@ func CheckTools(root string) error {
 	return checkTools(context.Background(), root, execRunner{})
 }
 
+// Lint checks local contracts and returns false for a valid empty project.
+func Lint(ctx context.Context, root string) (bool, error) {
+	if strings.TrimSpace(root) == "" {
+		root = "."
+	}
+	hasContracts, err := HasContracts(root)
+	if err != nil || !hasContracts {
+		return false, err
+	}
+	commands := execRunner{}
+	if err := checkTool(ctx, root, commands, LockedTools()[0]); err != nil {
+		return false, err
+	}
+	if _, err := commands.Run(ctx, root, "buf", "lint"); err != nil {
+		return false, err
+	}
+	if err := ValidateResponseContracts(root); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Breaking compares local contracts with an explicit Buf source baseline.
+func Breaking(ctx context.Context, root, against string) (bool, error) {
+	if strings.TrimSpace(against) == "" {
+		return false, errors.New("protobuf: --against is required")
+	}
+	if strings.TrimSpace(root) == "" {
+		root = "."
+	}
+	hasContracts, err := HasContracts(root)
+	if err != nil || !hasContracts {
+		return false, err
+	}
+	commands := execRunner{}
+	if err := checkTool(ctx, root, commands, LockedTools()[0]); err != nil {
+		return false, err
+	}
+	if _, err := commands.Run(ctx, root, "buf", "breaking", "--against", against); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func generate(ctx context.Context, root string, commands runner) error {
 	_, err := generateWithResult(ctx, root, commands)
 	return err
@@ -124,6 +169,17 @@ func generateWithResult(ctx context.Context, root string, commands runner) (Gene
 	module, err := readModule(root)
 	if err != nil {
 		return GenerateResult{}, err
+	}
+	hasContracts, err := HasContracts(root)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+	if !hasContracts {
+		serviceProject, layoutErr := hasServiceProjectLayout(root)
+		if layoutErr != nil {
+			return GenerateResult{}, layoutErr
+		}
+		return GenerateResult{ProtocolOnly: !serviceProject, Empty: true}, nil
 	}
 	for _, configuration := range []string{"buf.yaml", "buf.gen.yaml"} {
 		if info, statErr := os.Stat(filepath.Join(root, configuration)); statErr != nil || !info.Mode().IsRegular() {
@@ -167,6 +223,39 @@ func generateWithResult(ctx context.Context, root string, commands runner) (Gene
 	return GenerateResult{CreatedStubs: stubs}, nil
 }
 
+// HasContracts reports whether the project currently contains any local proto
+// contract. Empty grpc, mixed, and proto projects intentionally return false.
+func HasContracts(root string) (bool, error) {
+	if strings.TrimSpace(root) == "" {
+		root = "."
+	}
+	directory := filepath.Join(root, filepath.FromSlash(protoRoot))
+	info, err := os.Lstat(directory)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("protobuf: inspect %s: %w", directory, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false, fmt.Errorf("protobuf: %s is not a directory", directory)
+	}
+	found := false
+	err = filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("protobuf: refusing symlink %s", path)
+		}
+		if entry.Type().IsRegular() && filepath.Ext(entry.Name()) == ".proto" {
+			found = true
+		}
+		return nil
+	})
+	return found, err
+}
+
 func hasServiceProjectLayout(root string) (bool, error) {
 	required := []string{
 		filepath.Join("cmd", "server", "main.go"),
@@ -195,13 +284,20 @@ func hasServiceProjectLayout(root string) (bool, error) {
 
 func checkTools(ctx context.Context, root string, commands runner) error {
 	for _, tool := range LockedTools() {
-		output, err := commands.Run(ctx, root, tool.Name, "--version")
-		if err != nil {
+		if err := checkTool(ctx, root, commands, tool); err != nil {
 			return err
 		}
-		if !tool.Matches(output) {
-			return fmt.Errorf("protobuf: %s version mismatch: require %s, got %q; run `jgo tools install`", tool.Name, tool.Version, output)
-		}
+	}
+	return nil
+}
+
+func checkTool(ctx context.Context, root string, commands runner, tool Tool) error {
+	output, err := commands.Run(ctx, root, tool.Name, "--version")
+	if err != nil {
+		return err
+	}
+	if !tool.Matches(output) {
+		return fmt.Errorf("protobuf: %s version mismatch: require %s, got %q; run `jgo tools install`", tool.Name, tool.Version, output)
 	}
 	return nil
 }
@@ -374,12 +470,17 @@ func createServiceStubs(root string, services []generatedService) ([]ServiceStub
 		method   string
 	}
 	var pending []pendingStub
+	pendingPaths := make(map[string]string)
 	for _, service := range services {
 		for _, method := range service.Methods {
 			if existing[method.BusinessName] {
 				continue
 			}
 			path := filepath.Join(directory, snakeCase(method.BusinessName)+".go")
+			if owner, exists := pendingPaths[path]; exists && owner != method.BusinessName {
+				return nil, fmt.Errorf("protobuf: business methods %q and %q map to the same service file %s", owner, method.BusinessName, path)
+			}
+			pendingPaths[path] = method.BusinessName
 			if _, err := os.Stat(path); err == nil {
 				return nil, fmt.Errorf("protobuf: refusing to overwrite existing service file %s", path)
 			} else if !os.IsNotExist(err) {
@@ -453,7 +554,7 @@ func isServiceReceiver(receivers *ast.FieldList) bool {
 
 func writeTransport(root, module string, services []generatedService) error {
 	var output bytes.Buffer
-	output.WriteString("// Code generated by jgo rpc generate. DO NOT EDIT.\n")
+	output.WriteString("// Code generated by jgo pb generate. DO NOT EDIT.\n")
 	output.WriteString("package grpctransport\n\n")
 	output.WriteString("import (\n")
 	if hasAnyMethods(services) {

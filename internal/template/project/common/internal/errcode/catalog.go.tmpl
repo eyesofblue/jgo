@@ -1,0 +1,14 @@
+// Package errcode is the user-owned source of truth for business error codes.
+package errcode
+
+import jgoerrors "github.com/eyesofblue/jgo/errors"
+
+// Add service-local definitions to Local. Merge shared catalogs from dedicated
+// error-code modules in Catalog; duplicate codes or names then fail process
+// initialization even when they originate in different repositories.
+var Local = jgoerrors.MustCatalog()
+
+var Catalog = jgoerrors.MustMergeCatalogs(
+	Local,
+	// sharedcodes.Catalog,
+)

@@ -3,10 +3,13 @@ package command
 import (
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	callruntime "github.com/eyesofblue/jgo/internal/call"
+	protobufgen "github.com/eyesofblue/jgo/internal/generator/protobuf"
+	rpcbindinggen "github.com/eyesofblue/jgo/internal/generator/rpcbinding"
 	"github.com/spf13/cobra"
 )
 
@@ -93,16 +96,27 @@ func newListCommand(stdout io.Writer) *cobra.Command {
 	var root string
 	command := &cobra.Command{
 		Use:   "list",
-		Short: "List HTTP and gRPC methods from local contracts",
+		Short: "List HTTP APIs, local protobuf methods, and external RPC bindings",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
 			httpMethods, err := callruntime.ListHTTP(root)
 			if err != nil {
 				return err
 			}
-			grpcMethods, err := callruntime.ListGRPC(command.Context(), root)
+			hasContracts, err := protobufgen.HasContracts(root)
 			if err != nil {
 				return err
+			}
+			var grpcMethods []callruntime.GRPCMethod
+			if hasContracts {
+				grpcMethods, err = callruntime.ListGRPC(command.Context(), root)
+				if err != nil {
+					return err
+				}
+			}
+			bindings, bindingErr := rpcbindinggen.List(root)
+			if bindingErr != nil && !strings.Contains(bindingErr.Error(), "not a JGO service project") {
+				return bindingErr
 			}
 			writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 			for _, method := range httpMethods {
@@ -113,11 +127,24 @@ func newListCommand(stdout io.Writer) *cobra.Command {
 				if method.ClientStreaming || method.ServerStreaming {
 					kind = "stream"
 				}
-				_, _ = fmt.Fprintf(writer, "gRPC\t%s\t%s\n", kind, method.FullName)
+				_, _ = fmt.Fprintf(writer, "gRPC\tlocal\t%s\t%s\n", kind, method.FullName)
+			}
+			for _, binding := range bindings.Servers {
+				_, _ = fmt.Fprintf(writer, "gRPC\texternal-server\tservice\t%s.%s\t%s\n", binding.Package, binding.Service, displayModule(binding.Module, binding.Version))
+			}
+			for _, binding := range bindings.Clients {
+				_, _ = fmt.Fprintf(writer, "gRPC\texternal-client\t%s\t%s.%s\t%s\n", binding.Name, binding.Package, binding.Service, displayModule(binding.Module, binding.Version))
 			}
 			return writer.Flush()
 		},
 	}
 	command.Flags().StringVar(&root, "root", ".", "JGO project root")
 	return command
+}
+
+func displayModule(path, version string) string {
+	if version == "" {
+		return path + " (workspace)"
+	}
+	return path + "@" + version
 }

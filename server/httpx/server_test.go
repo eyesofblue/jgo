@@ -7,10 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/eyesofblue/jgo/app"
+	"github.com/eyesofblue/jgo/middleware"
 	"github.com/eyesofblue/jgo/middleware/traceid"
 	"github.com/eyesofblue/jgo/response"
 	"github.com/eyesofblue/jgo/telemetry"
@@ -103,6 +105,63 @@ func TestDefaultMiddlewareRecoversPanics(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOuterMiddlewareObservesFinalTimeoutAndRecoveryStatus(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.Handler
+		want    int
+	}{
+		{
+			name: "panic",
+			handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				panic("boom")
+			}),
+			want: http.StatusInternalServerError,
+		},
+		{
+			name: "timeout",
+			handler: http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+				<-request.Context().Done()
+			}),
+			want: http.StatusGatewayTimeout,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observed := make(chan int, 1)
+			observer := func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					wrapped := middleware.WrapResponseWriter(writer)
+					next.ServeHTTP(wrapped, request)
+					observed <- wrapped.Status()
+				})
+			}
+			server, err := New(
+				WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+				WithRequestTimeout(10*time.Millisecond),
+				WithHandler(test.handler),
+				WithOuterMiddleware(observer),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			responseRecorder := httptest.NewRecorder()
+			server.handler.ServeHTTP(responseRecorder, httptest.NewRequest(http.MethodGet, "/test", nil))
+			if responseRecorder.Code != test.want {
+				t.Fatalf("HTTP status = %d, want %d", responseRecorder.Code, test.want)
+			}
+			select {
+			case status := <-observed:
+				if status != test.want {
+					t.Fatalf("observer status = %d, want %d", status, test.want)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("outer observer did not complete")
+			}
+		})
 	}
 }
 

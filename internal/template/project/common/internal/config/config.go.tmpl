@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,9 +35,19 @@ func (duration *Duration) UnmarshalText(text []byte) error {
 // Config is the generated service configuration.
 type Config struct {
 	Service   Service              `yaml:"service"`
+	GRPC      GRPC                 `yaml:"grpc"`
+	Management Management          `yaml:"management"`
 	Telemetry Telemetry            `yaml:"telemetry"`
 	RPCClient map[string]RPCClient `yaml:"rpc_client"`
 }
+
+type GRPC struct { Reflection Reflection `yaml:"reflection"`; TLS GRPCTLS `yaml:"tls"` }
+type Reflection struct { Enabled bool `yaml:"enabled"` }
+type GRPCTLS struct { Enabled bool `yaml:"enabled"`; CertFile string `yaml:"cert_file"`; KeyFile string `yaml:"key_file"`; ClientAuth string `yaml:"client_auth"`; ClientCAFile string `yaml:"client_ca_file"` }
+type Management struct { Address string `yaml:"address"`; Metrics ManagementMetrics `yaml:"metrics"`; Readiness ManagementReadiness `yaml:"readiness"` }
+type ManagementMetrics struct { Enabled bool `yaml:"enabled"`; Prometheus Prometheus `yaml:"prometheus"` }
+type Prometheus struct { Enabled bool `yaml:"enabled"` }
+type ManagementReadiness struct { Enabled bool `yaml:"enabled"`; Timeout Duration `yaml:"timeout"` }
 
 // Service contains process-level server settings.
 type Service struct {
@@ -49,7 +60,10 @@ type Service struct {
 // Telemetry contains process observability settings.
 type Telemetry struct {
 	Tracing Tracing `yaml:"tracing"`
+	Metrics TelemetryMetrics `yaml:"metrics"`
 }
+
+type TelemetryMetrics struct { OTLP OTLPExporter `yaml:"otlp"` }
 
 // Tracing configures W3C trace-context creation and optional OTLP export.
 type Tracing struct {
@@ -70,6 +84,7 @@ type RPCClient struct {
 	Address string          `yaml:"address"`
 	Timeout Duration        `yaml:"timeout"`
 	TLS     RPCClientTLS    `yaml:"tls"`
+	Readiness string        `yaml:"readiness"`
 }
 
 // RPCClientTLS configures transport security for an outbound gRPC dependency.
@@ -96,6 +111,8 @@ func Load(arguments []string) (Config, error) {
 				Insecure: true,
 			},
 		}},
+		GRPC: GRPC{TLS: GRPCTLS{ClientAuth: "none"}},
+		Management: Management{Address: ":9091", Metrics: ManagementMetrics{Enabled: true, Prometheus: Prometheus{Enabled: true}}, Readiness: ManagementReadiness{Enabled: true, Timeout: Duration{Duration: time.Second}}},
 	}
 
 	set := flag.NewFlagSet("{{.Name}}", flag.ContinueOnError)
@@ -104,6 +121,7 @@ func Load(arguments []string) (Config, error) {
 	serviceName := set.String("service-name", "", "override service name")
 	httpAddress := set.String("http-address", "", "override HTTP listen address")
 	grpcAddress := set.String("grpc-address", "", "override gRPC listen address")
+	managementAddress := set.String("management-address", "", "override management HTTP listen address")
 	shutdownTimeout := set.String("shutdown-timeout", "", "override graceful shutdown timeout")
 	if err := set.Parse(arguments); err != nil {
 		return Config{}, fmt.Errorf("config: parse flags: %w", err)
@@ -116,9 +134,13 @@ func Load(arguments []string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("config: read %s: %w", *path, err)
 	}
-	if err := yaml.Unmarshal(contents, &config); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&config); err != nil {
 		return Config{}, fmt.Errorf("config: decode %s: %w", *path, err)
 	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF { if err == nil { err = errors.New("multiple YAML documents are not allowed") }; return Config{}, fmt.Errorf("config: decode %s: %w", *path, err) }
 
 	if err := applyEnvironment(&config); err != nil {
 		return Config{}, err
@@ -132,6 +154,7 @@ func Load(arguments []string) (Config, error) {
 	if *grpcAddress != "" {
 		config.Service.GRPCAddress = *grpcAddress
 	}
+	if *managementAddress != "" { config.Management.Address = *managementAddress }
 	if *shutdownTimeout != "" {
 		value, err := time.ParseDuration(*shutdownTimeout)
 		if err != nil {
@@ -165,6 +188,14 @@ func (config Config) Validate() error {
 	if config.Telemetry.Tracing.Exporter.Enabled && strings.TrimSpace(config.Telemetry.Tracing.Exporter.Endpoint) == "" {
 		return errors.New("config: telemetry.tracing.exporter.endpoint is required when export is enabled")
 	}
+	if strings.TrimSpace(config.Management.Address) == "" { return errors.New("config: management.address is required") }
+	if config.Management.Readiness.Timeout.Duration <= 0 { return errors.New("config: management.readiness.timeout must be positive") }
+	if config.GRPC.TLS.Enabled {
+		if strings.TrimSpace(config.GRPC.TLS.CertFile) == "" || strings.TrimSpace(config.GRPC.TLS.KeyFile) == "" { return errors.New("config: grpc.tls.cert_file and key_file are required when TLS is enabled") }
+		if config.GRPC.TLS.ClientAuth != "none" && config.GRPC.TLS.ClientAuth != "require_and_verify" { return errors.New("config: grpc.tls.client_auth must be none or require_and_verify") }
+		if config.GRPC.TLS.ClientAuth == "require_and_verify" && strings.TrimSpace(config.GRPC.TLS.ClientCAFile) == "" { return errors.New("config: grpc.tls.client_ca_file is required for mTLS") }
+	}
+	if config.Telemetry.Metrics.OTLP.Enabled && strings.TrimSpace(config.Telemetry.Metrics.OTLP.Endpoint) == "" { return errors.New("config: telemetry.metrics.otlp.endpoint is required when export is enabled") }
 	for name, client := range config.RPCClient {
 		if strings.TrimSpace(name) == "" {
 			return errors.New("config: rpc_client name is required")
@@ -175,6 +206,7 @@ func (config Config) Validate() error {
 		if client.Timeout.Duration < 0 {
 			return fmt.Errorf("config: rpc_client.%s.timeout must not be negative", name)
 		}
+		if client.Readiness != "" && client.Readiness != "optional" && client.Readiness != "required" { return fmt.Errorf("config: rpc_client.%s.readiness must be optional or required", name) }
 	}
 	return nil
 }
@@ -189,6 +221,7 @@ func applyEnvironment(config *Config) error {
 	if value := os.Getenv("JGO_GRPC_ADDRESS"); value != "" {
 		config.Service.GRPCAddress = value
 	}
+	if value := os.Getenv("JGO_MANAGEMENT_ADDRESS"); value != "" { config.Management.Address = value }
 	if value := os.Getenv("JGO_SHUTDOWN_TIMEOUT"); value != "" {
 		duration, err := time.ParseDuration(value)
 		if err != nil {

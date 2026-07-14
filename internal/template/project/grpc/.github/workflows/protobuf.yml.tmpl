@@ -1,0 +1,31 @@
+name: Protobuf
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  protobuf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install JGO
+        run: go install github.com/eyesofblue/jgo/cmd/jgo@{{.JGOVersion}}
+      - name: Install protobuf tools
+        run: jgo tools install
+      - name: Lint protobuf
+        run: jgo pb lint
+      - name: Check protobuf compatibility
+        if: github.event_name == 'pull_request'
+        run: jgo pb breaking --against ".git#branch=$GITHUB_BASE_REF"
+      - name: Test
+        run: go test ./...

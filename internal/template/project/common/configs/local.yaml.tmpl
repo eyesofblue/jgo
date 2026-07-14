@@ -3,11 +3,34 @@ service:
   http_address: ":8080"
   grpc_address: ":9090"
   shutdown_timeout: 10s
+grpc:
+  reflection:
+    enabled: true
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+    client_auth: none
+    client_ca_file: ""
+management:
+  address: ":9091"
+  metrics:
+    enabled: true
+    prometheus:
+      enabled: true
+  readiness:
+    enabled: true
+    timeout: 1s
 telemetry:
   tracing:
     enabled: true
     sample_ratio: 0.1
     exporter:
+      enabled: false
+      endpoint: "127.0.0.1:4317"
+      insecure: true
+  metrics:
+    otlp:
       enabled: false
       endpoint: "127.0.0.1:4317"
       insecure: true

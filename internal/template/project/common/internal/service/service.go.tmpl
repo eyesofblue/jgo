@@ -1,11 +1,7 @@
 // Package service contains protocol-independent business logic.
 package service
 
-import (
-	"context"
-
-	"{{.Module}}/internal/rpcclient"
-)
+import "{{.Module}}/internal/rpcclient"
 
 type Service struct {
 	RPC *rpcclient.Clients
@@ -16,8 +12,4 @@ func New(rpcClients *rpcclient.Clients) *Service {
 		rpcClients = &rpcclient.Clients{}
 	}
 	return &Service{RPC: rpcClients}
-}
-
-func (s *Service) Hello(context.Context) string {
-	return "hello from {{.Name}}"
 }

@@ -43,20 +43,17 @@ func TestGenerateProjectTrees(t *testing.T) {
 				t.Fatalf("generated tree differs from %s\nactual:\n%s", goldenPath, actual)
 			}
 			if projectType != TypeWeb {
-				contract, err := os.ReadFile(filepath.Join(target, "api", "proto", "demo_app", "v1", "service.proto"))
-				if err != nil || !strings.Contains(string(contract), "service DemoAppService") ||
-					!strings.Contains(string(contract), "int32 code = 1;") ||
-					!strings.Contains(string(contract), "string msg = 2;") ||
-					!strings.Contains(string(contract), "string message = 3;") {
-					t.Fatalf("derived protobuf service missing: %v\n%s", err, contract)
+				hasContracts, err := protobufContractsExist(target)
+				if err != nil || hasContracts {
+					t.Fatalf("new %s project must start without a business protobuf contract: found=%v err=%v", projectType, hasContracts, err)
 				}
 			}
 			readme, err := os.ReadFile(filepath.Join(target, "README.md"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(string(readme), "GetUser") || !strings.Contains(string(readme), "jgo list") {
-				t.Fatalf("generated README contains a stale API example or lacks jgo list:\n%s", readme)
+			if !strings.Contains(string(readme), "jgo list") || strings.Contains(string(readme), "jgo rpc pbapi") || strings.Contains(string(readme), "jgo rpc server add") {
+				t.Fatalf("generated README lacks current workflow or contains removed commands:\n%s", readme)
 			}
 			if projectType == TypeProto {
 				if _, err := os.Stat(filepath.Join(target, "cmd", "server", "main.go")); !os.IsNotExist(err) {
@@ -69,6 +66,23 @@ func TestGenerateProjectTrees(t *testing.T) {
 			}
 		})
 	}
+}
+
+func protobufContractsExist(root string) (bool, error) {
+	found := false
+	err := filepath.WalkDir(filepath.Join(root, "api", "proto"), func(path string, entry os.DirEntry, walkErr error) error {
+		if os.IsNotExist(walkErr) {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".proto" {
+			found = true
+		}
+		return nil
+	})
+	return found, err
 }
 
 func TestGenerateAcceptsEmptyTarget(t *testing.T) {

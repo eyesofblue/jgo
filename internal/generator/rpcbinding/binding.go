@@ -10,6 +10,7 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,14 +32,15 @@ type Method struct {
 }
 
 type Binding struct {
-	Name      string   `json:"name,omitempty"`
-	Module    string   `json:"module"`
-	Version   string   `json:"version"`
-	Package   string   `json:"package"`
-	GoPackage string   `json:"go_package"`
-	Service   string   `json:"service"`
-	Methods   []Method `json:"methods"`
-	Address   string   `json:"address,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Module      string   `json:"module"`
+	Version     string   `json:"version"`
+	Package     string   `json:"package"`
+	GoPackage   string   `json:"go_package"`
+	Service     string   `json:"service"`
+	Methods     []Method `json:"methods"`
+	Address     string   `json:"address,omitempty"`
+	unsupported string   `json:"-"`
 }
 
 type manifest struct {
@@ -47,7 +49,241 @@ type manifest struct {
 	Clients []Binding `json:"clients,omitempty"`
 }
 
-type AddConfig struct {
+// Snapshot is the public, read-only view used by list and doctor.
+type Snapshot struct {
+	Servers []Binding
+	Clients []Binding
+}
+
+// Validate performs a read-only validation of the external RPC binding
+// manifest, its protocol modules, and generated client configuration.
+func Validate(projectRoot string) error {
+	root, err := serviceRoot(projectRoot, false)
+	if err != nil {
+		return err
+	}
+	state, err := loadManifest(root)
+	if err != nil {
+		return err
+	}
+	if err := validateManifest(state); err != nil {
+		return err
+	}
+	if len(state.Servers) > 0 && !regularFile(filepath.Join(root, "internal", "transport", "grpc", "register.go")) {
+		return errors.New("rpc binding: server bindings require a grpc or mixed project")
+	}
+	if len(state.Servers) > 0 && !regularFile(filepath.Join(root, "internal", "transport", "grpc", "external.gen.go")) {
+		return errors.New("rpc binding: generated server bindings are missing; run jgo generate")
+	}
+	if len(state.Clients) > 0 && !regularFile(filepath.Join(root, "internal", "rpcclient", "clients.gen.go")) {
+		return errors.New("rpc binding: generated client bindings are missing; run jgo generate")
+	}
+	for _, existing := range append(append([]Binding(nil), state.Servers...), state.Clients...) {
+		resolved, resolveErr := resolve(root, BindConfig{ModuleSpec: moduleSpec(existing), Package: existing.Package, Service: existing.Service})
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if resolved.GoPackage != existing.GoPackage || !sameMethods(resolved.Methods, existing.Methods) {
+			return fmt.Errorf("rpc binding: %s.%s changed since the last bind; run jgo generate", existing.Package, existing.Service)
+		}
+	}
+	return validateClientConfiguration(root, state.Clients)
+}
+
+func validateManifest(state manifest) error {
+	servers := make(map[string]struct{}, len(state.Servers))
+	for _, binding := range state.Servers {
+		if strings.TrimSpace(binding.Module) == "" || strings.TrimSpace(binding.Package) == "" || strings.TrimSpace(binding.Service) == "" {
+			return errors.New("rpc binding: server manifest entry is incomplete")
+		}
+		if _, exists := servers[binding.Service]; exists {
+			return fmt.Errorf("rpc binding: duplicate server service %q", binding.Service)
+		}
+		servers[binding.Service] = struct{}{}
+	}
+	if err := validateServerMethodNames(state.Servers); err != nil {
+		return err
+	}
+	clients := make(map[string]struct{}, len(state.Clients))
+	fields := make(map[string]string, len(state.Clients))
+	for _, binding := range state.Clients {
+		if !validName(binding.Name) || strings.TrimSpace(binding.Module) == "" || strings.TrimSpace(binding.Package) == "" || strings.TrimSpace(binding.Service) == "" {
+			return fmt.Errorf("rpc binding: client manifest entry %q is incomplete", binding.Name)
+		}
+		if _, exists := clients[binding.Name]; exists {
+			return fmt.Errorf("rpc binding: duplicate client name %q", binding.Name)
+		}
+		clients[binding.Name] = struct{}{}
+		field := exported(binding.Name)
+		if existing, exists := fields[field]; exists {
+			return fmt.Errorf("rpc binding: client names %q and %q conflict after Go field generation", existing, binding.Name)
+		}
+		fields[field] = binding.Name
+	}
+	return nil
+}
+
+func validateServerMethodNames(bindings []Binding) error {
+	businessNames := make(map[string]string)
+	stubPaths := make(map[string]string)
+	for _, binding := range bindings {
+		for _, method := range binding.Methods {
+			owner := binding.Service + "." + method.Name
+			businessName := binding.Service + method.Name
+			if existing, exists := businessNames[businessName]; exists && existing != owner {
+				return fmt.Errorf("rpc binding: %s and %s map to the same business method %s", existing, owner, businessName)
+			}
+			businessNames[businessName] = owner
+			stubPath := snake(businessName)
+			if existing, exists := stubPaths[stubPath]; exists && existing != owner {
+				return fmt.Errorf("rpc binding: %s and %s map to the same service file %s.go", existing, owner, stubPath)
+			}
+			stubPaths[stubPath] = owner
+		}
+	}
+	return nil
+}
+
+func sameMethods(left, right []Method) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateClientConfiguration(root string, bindings []Binding) error {
+	if len(bindings) == 0 {
+		return nil
+	}
+	contents, err := os.ReadFile(filepath.Join(root, "configs", "local.yaml"))
+	if err != nil {
+		return fmt.Errorf("rpc binding: read client configuration: %w", err)
+	}
+	var data map[string]any
+	if err := yaml.Unmarshal(contents, &data); err != nil {
+		return fmt.Errorf("rpc binding: decode client configuration: %w", err)
+	}
+	clients, _ := data["rpc_client"].(map[string]any)
+	for _, binding := range bindings {
+		value, exists := clients[binding.Name]
+		if !exists {
+			return fmt.Errorf("rpc binding: rpc_client.%s configuration is missing", binding.Name)
+		}
+		configuration, _ := value.(map[string]any)
+		address, _ := configuration["address"].(string)
+		if strings.TrimSpace(address) == "" {
+			return fmt.Errorf("rpc binding: rpc_client.%s.address is required", binding.Name)
+		}
+	}
+	return nil
+}
+
+func List(projectRoot string) (Snapshot, error) {
+	root, err := serviceRoot(projectRoot, false)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	state, err := loadManifest(root)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{Servers: append([]Binding(nil), state.Servers...), Clients: append([]Binding(nil), state.Clients...)}, nil
+}
+
+// Generate reconciles all generated RPC binding files from .jgo/rpc.json.
+func Generate(projectRoot string) (bool, error) {
+	root, err := serviceRoot(projectRoot, false)
+	if err != nil {
+		return false, err
+	}
+	state, err := loadManifest(root)
+	if err != nil {
+		return false, err
+	}
+	if len(state.Servers) == 0 && len(state.Clients) == 0 {
+		return false, nil
+	}
+	if len(state.Servers) > 0 && !regularFile(filepath.Join(root, "internal", "transport", "grpc", "register.go")) {
+		return false, errors.New("rpc binding: server bindings require a grpc or mixed project")
+	}
+	resolvedServers := make([]Binding, 0, len(state.Servers))
+	for _, existing := range state.Servers {
+		binding, resolveErr := resolve(root, BindConfig{ModuleSpec: moduleSpec(existing), Package: existing.Package, Service: existing.Service})
+		if resolveErr != nil {
+			return false, resolveErr
+		}
+		resolvedServers = append(resolvedServers, binding)
+	}
+	resolvedClients := make([]Binding, 0, len(state.Clients))
+	for _, existing := range state.Clients {
+		binding, resolveErr := resolve(root, BindConfig{ModuleSpec: moduleSpec(existing), Package: existing.Package, Service: existing.Service})
+		if resolveErr != nil {
+			return false, resolveErr
+		}
+		binding.Name, binding.Address = existing.Name, existing.Address
+		resolvedClients = append(resolvedClients, binding)
+	}
+	state.Servers, state.Clients = resolvedServers, resolvedClients
+	if err := validateServerMethodNames(state.Servers); err != nil {
+		return false, err
+	}
+	paths := []string{"go.mod", "go.sum", filepath.Join(".jgo", "rpc.json"), filepath.Join("internal", "rpcclient", "clients.gen.go")}
+	if _, statErr := os.Stat(filepath.Join(root, "internal", "transport", "grpc", "register.go")); statErr == nil {
+		paths = append(paths, filepath.Join("internal", "transport", "grpc", "external.gen.go"))
+	}
+	for _, binding := range state.Servers {
+		for _, method := range binding.Methods {
+			paths = append(paths, filepath.Join("internal", "service", snake(binding.Service+method.Name)+".go"))
+		}
+	}
+	err = mutateFiles(root, paths, func() error {
+		for _, binding := range append(append([]Binding(nil), state.Servers...), state.Clients...) {
+			if err := addRequirement(root, binding.Module, binding.Version); err != nil {
+				return err
+			}
+		}
+		if regularFile(filepath.Join(root, "internal", "transport", "grpc", "register.go")) {
+			if err := writeServer(root, state.Servers); err != nil {
+				return err
+			}
+		}
+		for _, binding := range state.Servers {
+			if err := createServerStubs(root, binding); err != nil {
+				return err
+			}
+		}
+		if err := writeClients(root, state.Clients); err != nil {
+			return err
+		}
+		if err := saveManifest(root, state); err != nil {
+			return err
+		}
+		if hasWorkspaceBindings(state) {
+			return nil
+		}
+		return tidy(root)
+	})
+	return err == nil, err
+}
+
+func moduleSpec(binding Binding) string {
+	if binding.Version == "" {
+		return binding.Module
+	}
+	return binding.Module + "@" + binding.Version
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+type BindConfig struct {
 	Root       string
 	ModuleSpec string
 	Package    string
@@ -57,7 +293,7 @@ type AddConfig struct {
 	SkipTidy   bool
 }
 
-func AddServer(config AddConfig) (Binding, error) {
+func BindServer(config BindConfig) (Binding, error) {
 	root, err := serviceRoot(config.Root, true)
 	if err != nil {
 		return Binding{}, err
@@ -70,15 +306,23 @@ func AddServer(config AddConfig) (Binding, error) {
 	if err != nil {
 		return Binding{}, err
 	}
-	for _, existing := range state.Servers {
-		if existing.Package == binding.Package && existing.Service == binding.Service {
-			return Binding{}, fmt.Errorf("rpc server: %s.%s is already added", binding.Package, binding.Service)
-		}
+	replaced := false
+	for index, existing := range state.Servers {
 		if existing.Service == binding.Service {
-			return Binding{}, fmt.Errorf("rpc server: service %s is already implemented from %s; one application cannot implement two protocol versions with the same generated business method names", binding.Service, existing.Package)
+			if existing.Package != binding.Package {
+				return Binding{}, fmt.Errorf("rpc server: %s is already bound from %s; bind a new protocol package as a distinct Service or unbind it first", binding.Service, existing.Package)
+			}
+			state.Servers[index] = binding
+			replaced = true
+			break
 		}
 	}
-	state.Servers = append(state.Servers, binding)
+	if !replaced {
+		state.Servers = append(state.Servers, binding)
+	}
+	if err := validateServerMethodNames(state.Servers); err != nil {
+		return Binding{}, err
+	}
 	paths := []string{
 		"go.mod",
 		"go.sum",
@@ -101,17 +345,22 @@ func AddServer(config AddConfig) (Binding, error) {
 		if err := saveManifest(root, state); err != nil {
 			return err
 		}
-		if !config.SkipTidy {
-			return tidy(root)
+		if config.SkipTidy {
+			return nil
 		}
-		return nil
+		if binding.Version != "" {
+			if err := tidy(root); err != nil {
+				return err
+			}
+		}
+		return compile(root)
 	}); err != nil {
 		return Binding{}, err
 	}
 	return binding, nil
 }
 
-func AddClient(config AddConfig) (Binding, error) {
+func BindClient(config BindConfig) (Binding, error) {
 	root, err := serviceRoot(config.Root, false)
 	if err != nil {
 		return Binding{}, err
@@ -139,15 +388,27 @@ func AddClient(config AddConfig) (Binding, error) {
 	if err != nil {
 		return Binding{}, err
 	}
-	for _, existing := range state.Clients {
+	replaced := false
+	for index, existing := range state.Clients {
 		if existing.Name == binding.Name {
-			return Binding{}, fmt.Errorf("rpc client: name %q is already added", binding.Name)
+			if existing.Service != binding.Service {
+				return Binding{}, fmt.Errorf("rpc client: name %q is already bound to %s; client names cannot be repurposed", binding.Name, existing.Service)
+			}
+			if existing.Package != binding.Package {
+				return Binding{}, fmt.Errorf("rpc client: name %q is bound to %s; use a new name for a different protocol package", binding.Name, existing.Package)
+			}
+			binding.Address = existing.Address
+			state.Clients[index] = binding
+			replaced = true
+			break
 		}
 		if exported(existing.Name) == fieldName {
 			return Binding{}, fmt.Errorf("rpc client: name %q conflicts with %q after Go field generation", binding.Name, existing.Name)
 		}
 	}
-	state.Clients = append(state.Clients, binding)
+	if !replaced {
+		state.Clients = append(state.Clients, binding)
+	}
 	paths := []string{
 		"go.mod",
 		"go.sum",
@@ -162,20 +423,129 @@ func AddClient(config AddConfig) (Binding, error) {
 		if err := writeClients(root, state.Clients); err != nil {
 			return err
 		}
-		if err := addClientConfig(root, binding); err != nil {
+		if !replaced {
+			if err := addClientConfig(root, binding); err != nil {
+				return err
+			}
+		}
+		if err := saveManifest(root, state); err != nil {
+			return err
+		}
+		if config.SkipTidy {
+			return nil
+		}
+		if binding.Version != "" {
+			if err := tidy(root); err != nil {
+				return err
+			}
+		}
+		return compile(root)
+	}); err != nil {
+		return Binding{}, err
+	}
+	return binding, nil
+}
+
+// AddConfig and AddServer/AddClient are intentionally not retained: v0.4
+// replaces the pre-release add vocabulary with bind.
+
+func UnbindServer(projectRoot, service string) error {
+	root, err := serviceRoot(projectRoot, true)
+	if err != nil {
+		return err
+	}
+	state, err := loadManifest(root)
+	if err != nil {
+		return err
+	}
+	found := false
+	workspaceBinding := false
+	servers := state.Servers[:0]
+	for _, binding := range state.Servers {
+		if binding.Service == service {
+			found = true
+			workspaceBinding = binding.Version == ""
+			continue
+		}
+		servers = append(servers, binding)
+	}
+	if !found {
+		return fmt.Errorf("rpc server: service %q is not bound", service)
+	}
+	state.Servers = servers
+	paths := []string{"go.mod", "go.sum", filepath.Join(".jgo", "rpc.json"), filepath.Join("internal", "transport", "grpc", "external.gen.go")}
+	return mutateFiles(root, paths, func() error {
+		if err := writeServer(root, state.Servers); err != nil {
 			return err
 		}
 		if err := saveManifest(root, state); err != nil {
 			return err
 		}
-		if !config.SkipTidy {
-			return tidy(root)
+		if !workspaceBinding {
+			if err := tidy(root); err != nil {
+				return err
+			}
 		}
-		return nil
-	}); err != nil {
-		return Binding{}, err
+		return compile(root)
+	})
+}
+
+func UnbindClient(projectRoot, name string) error {
+	root, err := serviceRoot(projectRoot, false)
+	if err != nil {
+		return err
 	}
-	return binding, nil
+	state, err := loadManifest(root)
+	if err != nil {
+		return err
+	}
+	found := false
+	workspaceBinding := false
+	clients := state.Clients[:0]
+	for _, binding := range state.Clients {
+		if binding.Name == name {
+			found = true
+			workspaceBinding = binding.Version == ""
+			continue
+		}
+		clients = append(clients, binding)
+	}
+	if !found {
+		return fmt.Errorf("rpc client: name %q is not bound", name)
+	}
+	state.Clients = clients
+	paths := []string{"go.mod", "go.sum", filepath.Join(".jgo", "rpc.json"), filepath.Join("configs", "local.yaml"), filepath.Join("internal", "rpcclient", "clients.gen.go")}
+	return mutateFiles(root, paths, func() error {
+		if err := writeClients(root, state.Clients); err != nil {
+			return err
+		}
+		if err := removeClientConfig(root, name); err != nil {
+			return err
+		}
+		if err := saveManifest(root, state); err != nil {
+			return err
+		}
+		if !workspaceBinding && !hasWorkspaceBindings(state) {
+			if err := tidy(root); err != nil {
+				return err
+			}
+		}
+		return compile(root)
+	})
+}
+
+func hasWorkspaceBindings(state manifest) bool {
+	for _, binding := range state.Servers {
+		if binding.Version == "" {
+			return true
+		}
+	}
+	for _, binding := range state.Clients {
+		if binding.Version == "" {
+			return true
+		}
+	}
+	return false
 }
 
 type fileState struct {
@@ -237,7 +607,7 @@ func restoreFiles(root string, states map[string]fileState) error {
 func tidy(root string) error {
 	command := exec.Command("go", "mod", "tidy")
 	command.Dir = root
-	command.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOWORK=off")
+	command.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("rpc binding: go mod tidy: %w: %s", err, strings.TrimSpace(string(output)))
@@ -245,7 +615,20 @@ func tidy(root string) error {
 	return nil
 }
 
-func resolve(root string, config AddConfig) (Binding, error) {
+func compile(root string) error {
+	// go build validates production packages without executing package init or
+	// TestMain code as `go test -run ^$` would do during a generator command.
+	command := exec.Command("go", "build", "./...")
+	command.Dir = root
+	command.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("rpc binding: compile project: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func resolve(root string, config BindConfig) (Binding, error) {
 	path, version, err := splitModuleSpec(config.ModuleSpec)
 	if err != nil {
 		return Binding{}, err
@@ -277,13 +660,23 @@ func resolve(root string, config AddConfig) (Binding, error) {
 		sort.Strings(packages)
 		return Binding{}, fmt.Errorf("rpc binding: service %q exists in multiple packages: %s; select one with --package", config.Service, strings.Join(packages, ", "))
 	}
+	if matches[0].unsupported != "" {
+		return Binding{}, errors.New(matches[0].unsupported)
+	}
 	return matches[0], nil
 }
 
 func splitModuleSpec(spec string) (string, string, error) {
-	index := strings.LastIndex(strings.TrimSpace(spec), "@")
-	if index <= 0 || index == len(spec)-1 {
-		return "", "", fmt.Errorf("rpc binding: --module must use <module>@<version>")
+	spec = strings.TrimSpace(spec)
+	index := strings.LastIndex(spec, "@")
+	if index < 0 {
+		if err := module.CheckPath(spec); err != nil {
+			return "", "", fmt.Errorf("rpc binding: invalid module path %q: %w", spec, err)
+		}
+		return spec, "", nil
+	}
+	if index == 0 || index == len(spec)-1 {
+		return "", "", fmt.Errorf("rpc binding: --module must use <module> or <module>@<version>")
 	}
 	path, version := spec[:index], spec[index+1:]
 	if err := module.Check(path, version); err != nil {
@@ -301,8 +694,17 @@ func moduleDirectory(root, path, version string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if version == "" {
+		if directory, ok, err := workspaceModuleDirectory(root, path); err != nil {
+			return "", err
+		} else if ok {
+			return directory, nil
+		}
+		return "", fmt.Errorf("rpc binding: module %s has no version and is not present in the active go.work", path)
+	}
 	for _, replacement := range file.Replace {
-		if replacement.Old.Path == path && replacement.New.Version == "" {
+		matchesVersion := replacement.Old.Version == "" || replacement.Old.Version == version
+		if replacement.Old.Path == path && matchesVersion && replacement.New.Version == "" {
 			directory := replacement.New.Path
 			if !filepath.IsAbs(directory) {
 				directory = filepath.Join(root, directory)
@@ -312,7 +714,7 @@ func moduleDirectory(root, path, version string) (string, error) {
 	}
 	command := exec.Command("go", "mod", "download", "-json", path+"@"+version)
 	command.Dir = root
-	command.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOWORK=off")
+	command.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 	output, err := command.Output()
 	if err != nil {
 		return "", fmt.Errorf("rpc binding: download %s@%s: %w", path, version, err)
@@ -322,6 +724,41 @@ func moduleDirectory(root, path, version string) (string, error) {
 		return "", fmt.Errorf("rpc binding: resolve %s@%s: %s", path, version, result.Error)
 	}
 	return result.Dir, nil
+}
+
+func workspaceModuleDirectory(root, wanted string) (string, bool, error) {
+	command := exec.Command("go", "env", "GOWORK")
+	command.Dir = root
+	output, err := command.Output()
+	if err != nil {
+		return "", false, fmt.Errorf("rpc binding: inspect go.work: %w", err)
+	}
+	workPath := strings.TrimSpace(string(output))
+	if workPath == "" || workPath == "off" {
+		return "", false, nil
+	}
+	contents, err := os.ReadFile(workPath)
+	if err != nil {
+		return "", false, fmt.Errorf("rpc binding: read %s: %w", workPath, err)
+	}
+	work, err := modfile.ParseWork(workPath, contents, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("rpc binding: parse %s: %w", workPath, err)
+	}
+	for _, use := range work.Use {
+		directory := use.Path
+		if !filepath.IsAbs(directory) {
+			directory = filepath.Join(filepath.Dir(workPath), directory)
+		}
+		modContents, readErr := os.ReadFile(filepath.Join(directory, "go.mod"))
+		if readErr != nil {
+			return "", false, fmt.Errorf("rpc binding: read workspace module %s: %w", directory, readErr)
+		}
+		if modfile.ModulePath(modContents) == wanted {
+			return filepath.Clean(directory), true, nil
+		}
+	}
+	return "", false, nil
 }
 
 func scanServices(root, modulePath string) ([]Binding, error) {
@@ -369,12 +806,14 @@ func scanServices(root, modulePath string) ([]Binding, error) {
 					}
 					function, ok := field.Type.(*ast.FuncType)
 					if !ok || function.Params == nil || function.Results == nil || len(function.Params.List) != 2 || len(function.Results.List) != 2 {
-						return nil, fmt.Errorf("rpc binding: %s.%s is streaming or has an unsupported generated signature", binding.Service, field.Names[0].Name)
+						binding.unsupported = fmt.Sprintf("rpc binding: %s.%s is streaming or has an unsupported generated signature", binding.Service, field.Names[0].Name)
+						break
 					}
 					request, rok := pointerName(function.Params.List[1].Type)
 					response, sok := pointerName(function.Results.List[0].Type)
 					if !rok || !sok {
-						return nil, fmt.Errorf("rpc binding: %s.%s is streaming or has an unsupported generated signature", binding.Service, field.Names[0].Name)
+						binding.unsupported = fmt.Sprintf("rpc binding: %s.%s is streaming or has an unsupported generated signature", binding.Service, field.Names[0].Name)
+						break
 					}
 					binding.Methods = append(binding.Methods, Method{Name: field.Names[0].Name, Request: request, Response: response})
 				}
@@ -417,6 +856,9 @@ func serviceRoot(root string, requireGRPC bool) (string, error) {
 }
 
 func addRequirement(root, path, version string) error {
+	if version == "" {
+		return nil
+	}
 	modPath := filepath.Join(root, "go.mod")
 	contents, err := os.ReadFile(modPath)
 	if err != nil {
@@ -446,11 +888,23 @@ func loadManifest(root string) (manifest, error) {
 		return manifest{}, err
 	}
 	var state manifest
-	if err := json.Unmarshal(contents, &state); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&state); err != nil {
 		return manifest{}, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			err = errors.New("multiple JSON values are not allowed")
+		}
+		return manifest{}, fmt.Errorf("rpc binding: decode manifest: %w", err)
 	}
 	if state.Version != manifestVersion {
 		return manifest{}, fmt.Errorf("rpc binding: unsupported manifest version %d", state.Version)
+	}
+	if err := validateManifest(state); err != nil {
+		return manifest{}, err
 	}
 	return state, nil
 }
@@ -470,8 +924,15 @@ func saveManifest(root string, state manifest) error {
 }
 
 func writeServer(root string, bindings []Binding) error {
+	if len(bindings) == 0 {
+		// The second parameter must retain the concrete service type expected by
+		// register.go, so generate it from the current module layout.
+		modulePath, _ := currentModule(root)
+		contents := []byte("// Code generated by jgo rpc server bind. DO NOT EDIT.\npackage grpctransport\n\nimport (\n\t\"google.golang.org/grpc\"\n\t\"" + modulePath + "/internal/service\"\n)\n\nfunc registerExternal(grpc.ServiceRegistrar, *service.Service) {}\n")
+		return writeGo(filepath.Join(root, "internal", "transport", "grpc", "external.gen.go"), contents)
+	}
 	var output bytes.Buffer
-	output.WriteString("// Code generated by jgo rpc server add. DO NOT EDIT.\npackage grpctransport\n\nimport (\n\t\"context\"\n\tstderrors \"errors\"\n\tjgoerrors \"github.com/eyesofblue/jgo/errors\"\n\t\"go.opentelemetry.io/otel/attribute\"\n\t\"go.opentelemetry.io/otel/trace\"\n\t\"google.golang.org/grpc\"\n\t\"")
+	output.WriteString("// Code generated by jgo rpc server bind. DO NOT EDIT.\npackage grpctransport\n\nimport (\n\t\"context\"\n\tstderrors \"errors\"\n\tjgoerrors \"github.com/eyesofblue/jgo/errors\"\n\t\"go.opentelemetry.io/otel/attribute\"\n\t\"go.opentelemetry.io/otel/trace\"\n\t\"google.golang.org/grpc\"\n\t\"")
 	modulePath, _ := currentModule(root)
 	output.WriteString(modulePath + "/internal/service\"\n")
 	packages, aliases := bindingPackages(bindings)
@@ -516,8 +977,12 @@ func createServerStubs(root string, binding Binding) error {
 
 func writeClients(root string, bindings []Binding) error {
 	modulePath, _ := currentModule(root)
+	if len(bindings) == 0 {
+		contents := []byte("// Code generated by jgo rpc client bind. DO NOT EDIT.\npackage rpcclient\n\nimport (\n\t\"log/slog\"\n\tclientgrpcx \"github.com/eyesofblue/jgo/client/grpcx\"\n\t\"" + modulePath + "/internal/config\"\n)\n\ntype Clients struct{}\n\nfunc New(map[string]config.RPCClient, *slog.Logger) (*clientgrpcx.Manager, *Clients, error) { return nil, &Clients{}, nil }\n")
+		return writeGo(filepath.Join(root, "internal", "rpcclient", "clients.gen.go"), contents)
+	}
 	var output bytes.Buffer
-	output.WriteString("// Code generated by jgo rpc client add. DO NOT EDIT.\npackage rpcclient\n\nimport (\n\t\"fmt\"\n\t\"log/slog\"\n\n\tclientgrpcx \"github.com/eyesofblue/jgo/client/grpcx\"\n\t\"" + modulePath + "/internal/config\"\n")
+	output.WriteString("// Code generated by jgo rpc client bind. DO NOT EDIT.\npackage rpcclient\n\nimport (\n\t\"fmt\"\n\t\"log/slog\"\n\n\tclientgrpcx \"github.com/eyesofblue/jgo/client/grpcx\"\n\t\"" + modulePath + "/internal/config\"\n")
 	packages, aliases := bindingPackages(bindings)
 	for index, packagePath := range packages {
 		output.WriteString(fmt.Sprintf("\tpb%d %q\n", index, packagePath))
@@ -568,8 +1033,30 @@ func addClientConfig(root string, binding Binding) error {
 	if _, exists := clients[binding.Name]; exists {
 		return fmt.Errorf("rpc client: config rpc_client.%s already exists", binding.Name)
 	}
-	clients[binding.Name] = map[string]any{"address": binding.Address, "timeout": "3s", "tls": map[string]any{"enabled": false, "server_name": "", "ca_file": ""}}
+	clients[binding.Name] = map[string]any{"address": binding.Address, "timeout": "3s", "readiness": "required", "tls": map[string]any{"enabled": false, "server_name": "", "ca_file": ""}}
 	data["rpc_client"] = clients
+	updated, err := yaml.Marshal(data)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, updated, 0o644)
+}
+
+func removeClientConfig(root, name string) error {
+	path := filepath.Join(root, "configs", "local.yaml")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var data map[string]any
+	if err := yaml.Unmarshal(contents, &data); err != nil {
+		return err
+	}
+	clients, _ := data["rpc_client"].(map[string]any)
+	if clients != nil {
+		delete(clients, name)
+		data["rpc_client"] = clients
+	}
 	updated, err := yaml.Marshal(data)
 	if err != nil {
 		return err

@@ -7,11 +7,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/eyesofblue/jgo/app"
 	jerrors "github.com/eyesofblue/jgo/errors"
+	jgometrics "github.com/eyesofblue/jgo/metrics"
 	"github.com/eyesofblue/jgo/middleware/traceid"
 	"github.com/eyesofblue/jgo/server/httpx"
 	"github.com/eyesofblue/jgo/telemetry"
@@ -20,6 +23,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	reflectionpb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
@@ -94,6 +98,123 @@ func TestServerWithBufconn(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServerObserverSeesFinalMappedAndSecurityStatuses(t *testing.T) {
+	listener := bufconn.Listen(bufferSize)
+	observed := make(chan codes.Code, 2)
+	observer := func(ctx context.Context, request any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		response, err := handler(ctx, request)
+		observed <- status.Code(err)
+		return response, err
+	}
+	server, err := New(
+		WithListener(listener),
+		WithLogger(discardLogger()),
+		WithUnaryInterceptors(observer),
+		WithAuthenticator(testAuthenticator{}),
+		WithRegister(func(registrar grpc.ServiceRegistrar) { registerTestService(registrar, &testServiceImpl{}) }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Start(context.Background()) }()
+	connection := dialBufconn(t, listener)
+	defer connection.Close()
+
+	err = connection.Invoke(context.Background(), "/test.Service/Echo", wrapperspb.String(""), new(wrapperspb.StringValue))
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated call = %v", err)
+	}
+	authorized := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("authorization", "Bearer token"))
+	err = connection.Invoke(authorized, "/test.Service/Fail", wrapperspb.String(""), new(wrapperspb.StringValue))
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("mapped call = %v", err)
+	}
+	for _, want := range []codes.Code{codes.Unauthenticated, codes.InvalidArgument} {
+		select {
+		case got := <-observed:
+			if got != want {
+				t.Fatalf("observer status = %v, want %v", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("observer did not receive %v", want)
+		}
+	}
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegistrationPanicDoesNotDeadlockShutdown(t *testing.T) {
+	server, err := New(
+		WithListener(bufconn.Listen(bufferSize)),
+		WithRegister(func(grpc.ServiceRegistrar) { panic("bad registration") }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := app.New(app.WithShutdownTimeout(200 * time.Millisecond))
+	if err := application.Add(server); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = application.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "bad registration") {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if errors.Is(err, app.ErrShutdownTimeout) || time.Since(started) > time.Second {
+		t.Fatalf("registration panic deadlocked shutdown: %v", err)
+	}
+}
+
+func TestGRPCMetricsIncludeAuthenticationAndFinalMappedStatuses(t *testing.T) {
+	serviceMetrics, err := jgometrics.New(context.Background(), jgometrics.OTLPConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := bufconn.Listen(bufferSize)
+	server, err := New(
+		WithListener(listener),
+		WithLogger(discardLogger()),
+		WithUnaryInterceptors(serviceMetrics.UnaryServerInterceptor()),
+		WithAuthenticator(testAuthenticator{}),
+		WithRegister(func(registrar grpc.ServiceRegistrar) { registerTestService(registrar, &testServiceImpl{}) }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Start(context.Background()) }()
+	connection := dialBufconn(t, listener)
+	defer connection.Close()
+
+	_ = connection.Invoke(context.Background(), "/test.Service/Echo", wrapperspb.String(""), new(wrapperspb.StringValue))
+	authorized := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("authorization", "Bearer token"))
+	_ = connection.Invoke(authorized, "/test.Service/Fail", wrapperspb.String(""), new(wrapperspb.StringValue))
+
+	recorder := httptest.NewRecorder()
+	serviceMetrics.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	contents, _ := io.ReadAll(recorder.Result().Body)
+	output := string(contents)
+	for _, fragment := range []string{
+		"grpc_code=\"Unauthenticated\",method=\"/test.Service/Echo\"",
+		"grpc_code=\"InvalidArgument\",method=\"/test.Service/Fail\"",
+	} {
+		if !strings.Contains(output, fragment) {
+			t.Fatalf("metrics missing %q:\n%s", fragment, output)
+		}
+	}
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}

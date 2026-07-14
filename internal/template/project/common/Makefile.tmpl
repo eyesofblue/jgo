@@ -1,6 +1,6 @@
 export GOTOOLCHAIN := local
 
-.PHONY: fmt test vet build check doctor generate run tools api-generate rpc-generate
+.PHONY: fmt test vet build check doctor generate run tools api-generate pb-generate pb-lint
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -31,5 +31,8 @@ tools:
 api-generate:
 	jgo api generate
 
-rpc-generate:
-	jgo rpc generate
+pb-generate:
+	jgo pb generate
+
+pb-lint:
+	jgo pb lint

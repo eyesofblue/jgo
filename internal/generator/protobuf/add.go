@@ -139,6 +139,9 @@ func candidateFiles(root, selected string) ([]string, error) {
 		if err != nil || !inside {
 			return nil, fmt.Errorf("protobuf: --file must be inside %s", protoDirectory)
 		}
+		if err := rejectSymlinkPath(protoDirectory, path); err != nil {
+			return nil, err
+		}
 		info, err := os.Lstat(path)
 		if err != nil {
 			return nil, fmt.Errorf("protobuf: inspect %s: %w", selected, err)
@@ -154,8 +157,8 @@ func candidateFiles(root, selected string) ([]string, error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.Type()&os.ModeSymlink != 0 && filepath.Ext(entry.Name()) == ".proto" {
-			return fmt.Errorf("protobuf: refusing protobuf symlink %s", path)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("protobuf: refusing symlink %s", path)
 		}
 		if entry.Type().IsRegular() && filepath.Ext(entry.Name()) == ".proto" {
 			files = append(files, path)
@@ -170,6 +173,46 @@ func candidateFiles(root, selected string) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+func rejectSymlinkPath(root, path string) error {
+	inside, err := pathInside(root, path)
+	if err != nil || !inside {
+		return fmt.Errorf("protobuf: path must be inside %s", root)
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(absoluteRoot, absolutePath)
+	if err != nil {
+		return err
+	}
+	current := absoluteRoot
+	parts := []string{"."}
+	if relative != "." {
+		parts = append(parts, strings.Split(relative, string(filepath.Separator))...)
+	}
+	for _, part := range parts {
+		if part != "." {
+			current = filepath.Join(current, part)
+		}
+		info, statErr := os.Lstat(current)
+		if os.IsNotExist(statErr) {
+			return nil
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("protobuf: refusing symlink %s", current)
+		}
+	}
+	return nil
 }
 
 func pathInside(directory, path string) (bool, error) {

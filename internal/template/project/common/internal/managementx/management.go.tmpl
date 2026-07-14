@@ -1,0 +1,41 @@
+package managementx
+
+import (
+	"context"
+	"log/slog"
+
+	clientgrpcx "github.com/eyesofblue/jgo/client/grpcx"
+	"github.com/eyesofblue/jgo/management"
+	"github.com/eyesofblue/jgo/metrics"
+	"github.com/eyesofblue/jgo/readiness"
+	"{{.Module}}/internal/config"
+	"{{.Module}}/internal/errcode"
+)
+
+func New(ctx context.Context, configuration config.Config, rpcManager *clientgrpcx.Manager, logger *slog.Logger) (*management.Server, *metrics.Metrics, error) {
+	registry := readiness.New(configuration.Management.Readiness.Timeout.Duration)
+	if configuration.Management.Readiness.Enabled && rpcManager != nil {
+		for name, client := range configuration.RPCClient {
+			clientName := name
+			// Strict by default: omitted values remain required. Only an explicit
+			// "optional" setting relaxes readiness for a non-critical dependency.
+			required := client.Readiness != "optional"
+			if err := registry.Add("rpc:"+clientName, required, readiness.CheckFunc(func(ctx context.Context) error {
+				return rpcManager.CheckReadiness(ctx, clientName)
+			})); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	serviceMetrics, err := metrics.New(ctx, metrics.OTLPConfig{Enabled: configuration.Telemetry.Metrics.OTLP.Enabled, Endpoint: configuration.Telemetry.Metrics.OTLP.Endpoint, Insecure: configuration.Telemetry.Metrics.OTLP.Insecure, ServiceName: configuration.Service.Name}, errcode.Catalog)
+	if err != nil { return nil, nil, err }
+	server, err := management.New(management.Config{
+		Address: configuration.Management.Address,
+		MetricsEnabled: configuration.Management.Metrics.Enabled && configuration.Management.Metrics.Prometheus.Enabled,
+		MetricsHandler: serviceMetrics.Handler(),
+		Readiness: registry,
+		Logger: logger,
+	})
+	if err != nil { return nil, nil, err }
+	return server, serviceMetrics, nil
+}

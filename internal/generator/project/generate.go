@@ -181,8 +181,7 @@ func render(name string, contents []byte, config Config) ([]byte, error) {
 func validateGenerated(root string, config Config) error {
 	if config.IsProto() {
 		required := []string{
-			"go.mod", "README.md", "Makefile", "doc.go", "buf.yaml", "buf.gen.yaml",
-			"api/proto/" + config.PackageName + "/v1/service.proto",
+			"go.mod", "README.md", "Makefile", "doc.go", "buf.yaml", "buf.gen.yaml", ".github/workflows/protobuf.yml",
 			"internal/tooldeps/deps.go",
 		}
 		for _, relative := range required {
@@ -193,12 +192,12 @@ func validateGenerated(root string, config Config) error {
 		}
 		return nil
 	}
-	required := []string{"go.mod", "README.md", "Makefile", "cmd/server/main.go", "internal/config/config.go", "internal/rpcclient/clients.gen.go", "internal/service/service.go", "internal/tooldeps/deps.go", "configs/local.yaml"}
+	required := []string{"go.mod", "README.md", "Makefile", "cmd/server/main.go", "internal/config/config.go", "internal/errcode/catalog.go", "internal/managementx/management.go", "internal/rpcclient/clients.gen.go", "internal/securityx/security.go", "internal/service/service.go", "internal/tooldeps/deps.go", "configs/local.yaml"}
 	if config.HasWeb() {
 		required = append(required, "api/http/openapi.yaml", "internal/transport/http/routes.go")
 	}
 	if config.HasGRPC() {
-		required = append(required, "api/proto/"+config.PackageName+"/v1/service.proto", "internal/transport/grpc/register.go", "internal/transport/grpc/register.gen.go", "internal/transport/grpc/external.gen.go", "buf.yaml", "buf.gen.yaml")
+		required = append(required, "internal/transport/grpc/register.go", "internal/transport/grpc/register.gen.go", "internal/transport/grpc/external.gen.go", "buf.yaml", "buf.gen.yaml", ".github/workflows/protobuf.yml")
 	}
 	sort.Strings(required)
 	for _, relative := range required {

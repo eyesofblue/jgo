@@ -51,3 +51,10 @@ func TestValidateRPCClient(t *testing.T) {
 		t.Fatal("Validate() error = nil, want missing rpc client address")
 	}
 }
+
+func TestLoadRejectsUnknownYAMLFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	contents := []byte("service:\n  name: test\n  http_address: ':8080'\n  grpc_address: ':9090'\n  shutdown_timeout: 5s\n  timeuot: 3s\n")
+	if err := os.WriteFile(path, contents, 0o600); err != nil { t.Fatal(err) }
+	if _, err := Load([]string{"--config", path}); err == nil { t.Fatal("unknown YAML field was accepted") }
+}

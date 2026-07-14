@@ -4,7 +4,30 @@ All notable JGO changes are documented here. JGO follows Semantic Versioning.
 
 ## Unreleased
 
-No changes yet.
+### Breaking CLI changes
+
+- Replaced protobuf authoring commands with `jgo pb service add`, `jgo pb method add`, and `jgo pb generate`.
+- Replaced external RPC add commands with Service-grained `jgo rpc server/client bind` and `unbind`.
+- Removed all pre-v0.4 aliases, including `rpc pbservice`, `rpc pbapi`, `rpc generate`, and `rpc server/client add`.
+
+### Added
+
+- Empty web/grpc/mixed/proto skeletons with no generated Echo or Greeter API.
+- External-only gRPC services and simultaneous local plus external protobuf contracts.
+- Idempotent binding version updates, transactional unbind, aggregated `jgo list`, and `go.work` module resolution.
+- `jgo pb lint` and explicit-baseline `jgo pb breaking`, plus generated pull-request compatibility workflows.
+- Configurable gRPC Reflection, strict server TLS/mTLS, and infrastructure-neutral authentication/authorization hooks.
+- Dedicated Management HTTP server with `/healthz`, `/readyz`, and `/metrics`.
+- Generic required/optional readiness registry with RPC client connectivity checks.
+- Prometheus HTTP/gRPC RED, bounded business-code, Go runtime metrics, and optional OTLP Metrics export.
+- Go-native business error Catalog with duplicate detection and RPC-code-to-HTTP-status mapping.
+- Strict YAML unknown-field rejection and direct `jgo run --config ...` argument forwarding.
+- Final-status HTTP/gRPC RED accounting for timeout, panic, authentication, authorization, and mapped system errors.
+- Read-only external binding validation in `jgo doctor`, hard readiness collection deadlines, and cross-module Catalog merging.
+- No-overwrite protobuf package creation, version-precise workspace/replace resolution, unary binding isolation from unrelated streaming Services, and compile-verified transactional bind/unbind.
+- Strict-by-default RPC readiness, panic-isolated dependency checks, lifecycle-safe Management/gRPC startup, and multi-Catalog Metrics validation.
+- Symlink-safe protobuf authoring, unambiguous multi-file package selection, safe package-name derivation, and generated business method/file collision detection.
+- Deterministic generation verification without `pipefail`/SIGPIPE false failures.
 
 ## v0.3.0 - 2026-07-14
 

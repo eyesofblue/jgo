@@ -111,7 +111,7 @@ func TestAPIHelpUsesConfirmedStructFlags(t *testing.T) {
 	}
 }
 
-func TestRPCAddCommandUpdatesContract(t *testing.T) {
+func TestPBMethodAddCommandUpdatesContract(t *testing.T) {
 	root := t.TempDir()
 	contract := filepath.Join(root, "api", "proto", "demo", "v1", "service.proto")
 	if err := os.MkdirAll(filepath.Dir(contract), 0o755); err != nil {
@@ -121,7 +121,7 @@ func TestRPCAddCommandUpdatesContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	err := Execute(&output, &output, []string{"rpc", "pbapi", "add", "GetUser", "--service", "UserService", "--root", root})
+	err := Execute(&output, &output, []string{"pb", "method", "add", "GetUser", "--service", "UserService", "--root", root})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -139,7 +139,7 @@ func TestRPCAddCommandUpdatesContract(t *testing.T) {
 	}
 }
 
-func TestRPCPBServiceAddCommandUpdatesContract(t *testing.T) {
+func TestPBServiceAddCommandUpdatesContract(t *testing.T) {
 	root := t.TempDir()
 	contract := filepath.Join(root, "api", "proto", "demo", "v1", "service.proto")
 	if err := os.MkdirAll(filepath.Dir(contract), 0o755); err != nil {
@@ -149,7 +149,7 @@ func TestRPCPBServiceAddCommandUpdatesContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := Execute(&output, &output, []string{"rpc", "pbservice", "add", "UserService", "--root", root}); err != nil {
+	if err := Execute(&output, &output, []string{"pb", "service", "add", "UserService", "--root", root}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "added protobuf service UserService") {
@@ -166,6 +166,46 @@ func TestRPCOldAddCommandIsRemoved(t *testing.T) {
 	err := Execute(&output, &output, []string{"rpc", "add", "GetUser", "--service", "UserService"})
 	if err == nil {
 		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
+func TestAllPreV04RPCCommandsAreRemoved(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"rpc", "pbservice", "add", "UserService"},
+		{"rpc", "pbapi", "add", "GetUser", "--service", "UserService"},
+		{"rpc", "generate"},
+		{"rpc", "server", "add", "UserService"},
+		{"rpc", "client", "add", "UserService"},
+	} {
+		var output bytes.Buffer
+		if err := Execute(&output, &output, arguments); err == nil {
+			t.Fatalf("removed command accepted: %v", arguments)
+		}
+	}
+}
+
+func TestPBUnknownSubcommandsFail(t *testing.T) {
+	for _, arguments := range [][]string{{"pb", "unknown"}, {"pb", "service", "unknown"}, {"pb", "method", "unknown"}} {
+		var output bytes.Buffer
+		if err := Execute(&output, &output, arguments); err == nil {
+			t.Fatalf("unknown command accepted: %v", arguments)
+		}
+	}
+}
+
+func TestListShowsExternalBindings(t *testing.T) {
+	root := t.TempDir()
+	writeCommandContract(t, root, "go.mod", "module example.com/service\n\ngo 1.24.0\n")
+	writeCommandContract(t, root, "cmd/server/main.go", "package main\nfunc main() {}\n")
+	writeCommandContract(t, root, ".jgo/rpc.json", `{"version":1,"servers":[{"module":"example.com/company-api","version":"v0.1.0","package":"example.com/company-api/gen/pb/company/user/v1","go_package":"userv1","service":"UserService"}],"clients":[{"name":"user","module":"example.com/company-api","version":"v0.1.0","package":"example.com/company-api/gen/pb/company/user/v1","go_package":"userv1","service":"UserService"}]}`)
+	var output bytes.Buffer
+	if err := Execute(&output, &output, []string{"list", "--root", root}); err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"external-server", "external-client", "UserService", "example.com/company-api@v0.1.0"} {
+		if !strings.Contains(output.String(), fragment) {
+			t.Fatalf("output missing %q:\n%s", fragment, output.String())
+		}
 	}
 }
 
@@ -238,7 +278,7 @@ message GetUserResponse {}
 	if err := Execute(&output, &output, []string{"list", "--root", root}); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	for _, fragment := range []string{"HTTP  GET", "/get_user", "GetUser", "gRPC  unary", "demo.v1.UserService.GetUser"} {
+	for _, fragment := range []string{"HTTP  GET", "/get_user", "GetUser", "gRPC  local  unary", "demo.v1.UserService.GetUser"} {
 		if !strings.Contains(output.String(), fragment) {
 			t.Fatalf("output does not contain %q:\n%s", fragment, output.String())
 		}

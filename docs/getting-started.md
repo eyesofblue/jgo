@@ -1,109 +1,81 @@
 # JGO 快速入门
 
-JGO 的 Go module 是 `github.com/eyesofblue/jgo`，最低支持 Go 1.24.0。
-
-## 安装 CLI
-
-安装前确认：
+最低 Go 版本是 1.24.0。
 
 ```bash
-go version # 需要 Go 1.24.0 或更高版本
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.0
 ```
 
-安装当前发布版本：
+## 创建空服务
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@v0.3.0
-jgo --version
-```
-
-需要跟随最新发布版本时可以使用 `@latest`。确保 `$(go env GOPATH)/bin` 已加入 `PATH`。参与框架开发时可以在 JGO 仓库中构建：
-
-```bash
-go build -trimpath -o bin/jgo ./cmd/jgo
-./bin/jgo --help
-```
-
-完整依赖及锁定版本见 [dependencies.md](dependencies.md)。
-
-## 创建项目
-
-```bash
-jgo new user-service \
-  --module example.com/user-service \
-  --type mixed
+jgo new user-service --module example.com/user-service --type mixed
 cd user-service
-```
-
-`--type` 支持 `web`、`grpc`、`mixed` 和只存放公共 protobuf 的 `proto`。默认采用当前 `go env GOVERSION`，可以通过 `--go-version` 指定；创建过程会自动执行 `go mod tidy` 并生成 `go.sum`，离线环境可以使用 `--skip-tidy`。本地开发 JGO 源码时可以增加：
-
-```bash
---jgo-replace /absolute/path/to/jgo
-```
-
-## 检查环境
-
-```bash
 jgo doctor
+go test ./...
 ```
 
-gRPC 项目需要锁定版 Buf 工具链。缺失时由用户显式安装：
+新项目没有 Echo/Greeter。`jgo new` 已执行 `go mod tidy` 并生成 `go.sum`。
+
+## 增加 HTTP API
 
 ```bash
-jgo tools install
-jgo tools check
-jgo doctor
+# 在 api/http/model 定义 UserInfo
+jgo api add GetUser --method GET --path /get_user \
+  --request uid:int64:required:query \
+  --response-data UserInfo
+jgo api generate
 ```
 
-`tools check` 和 `doctor` 只检查，不会修改开发环境。JGO 使用 `GOTOOLCHAIN=local`，不会隐式切换 Go 工具链。
+## 增加项目自有 gRPC 协议
 
-`--jgo-replace` 只用于框架本地开发：它会在新项目的 `go.mod` 中加入指向本机 JGO 源码的 `replace`。普通使用者应使用已发布的 `--jgo-version`，默认值为 `v0.3.0`。
+```bash
+jgo tools install # 当前 Go 环境只需一次
+jgo pb service add UserService
+jgo pb method add GetUser --service UserService
+jgo pb generate
+```
 
-## 生成、运行和构建
+## 只实现公共协议
+
+```bash
+jgo rpc server bind UserService \
+  --module example.com/company-api@v0.1.0
+```
+
+这种 external-only 服务不需要本地 proto，也不需要 Buf。
+
+## 调用公共协议
+
+```bash
+jgo rpc client bind UserService \
+  --module example.com/company-api@v0.1.0 \
+  --name user
+```
+
+修改 `configs/local.yaml` 中 `rpc_client.user` 的地址、3 秒超时、TLS 和 `readiness`。新绑定默认 `readiness: required`；只有非关键依赖才显式改为 `optional`。
+
+## 本地联调未发布协议
+
+```bash
+go work init
+go work use ./company-api ./user-service
+cd user-service
+jgo rpc server bind UserService --module example.com/company-api
+```
+
+## 生成、运行与运维端点
 
 ```bash
 jgo generate
 jgo list
-jgo run
-jgo build
+jgo run --config configs/local.yaml
 ```
 
-服务项目的 `jgo build` 默认生成 `bin/<项目目录名>`，也可以使用 `--output/-o` 指定路径。proto 项目没有服务进程，使用 `jgo rpc generate` 生成公共包并通过 `go test ./...`、`go build ./...` 验证。
+- 业务 HTTP：`:8080`
+- gRPC：`:9090`
+- Management：`:9091/healthz`、`:9091/readyz`、`:9091/metrics`
 
-新增 protobuf Service 使用 `jgo rpc pbservice add`；给 Service 新增 RPC 方法使用 `jgo rpc pbapi add`，它会自动为 response 保留非 optional 的 `int32 code = 1` 和 `string msg = 2`，业务字段从编号 `3` 开始。当前接口始终以 OpenAPI/proto 为准，使用 `jgo list` 查看，不需要手工维护第二份接口清单。
+本地 Reflection 开启，框架默认关闭。YAML 使用严格模式。required 下游不可用时进程仍启动，但 `/readyz` 返回 503。
 
-业务实现返回 `jgo/errors.Error` 时，生成的 transport 会把业务码和消息写入 Response，并保持 gRPC status 为 `OK`；panic、未知错误、取消和超时继续使用非 `OK` status。
-
-公共 proto module 发布后，使用 `jgo rpc server add <Service> --module <module>@<version>` 接入服务端，使用 `jgo rpc client add <Service> --module <module>@<version>` 接入调用方。JGO 自动发现唯一生成包；同名 Service 存在多个 protobuf API 版本时用 `--package` 明确选择。
-
-## 调试接口
-
-```bash
-jgo call http GetUser \
-  --addr http://127.0.0.1:8080 \
-  --data '{"uid":12345}'
-
-jgo call grpc UserService.Echo \
-  --addr 127.0.0.1:9090 \
-  --data '{"message":"hello"}'
-```
-
-两种协议都支持可重复的 `--header/-H 'Name: Value'` 和 `--timeout`。
-
-`jgo call grpc` 会显示普通 protobuf 字段的零值；未设置的 `optional` 和 message 字段仍然省略。
-
-## Bash/Zsh completion
-
-Bash 当前会话：
-
-```bash
-source <(jgo completion bash)
-```
-
-Zsh 可写入 `$fpath` 中的目录：
-
-```bash
-jgo completion zsh > "${fpath[1]}/_jgo"
-```
-
-所有命令和参数见 [command-reference.md](command-reference.md)，Web、gRPC、mixed 和 proto 的完整示例见 [examples.md](examples.md)。
+完整命令见 [command-reference.md](command-reference.md)，生产配置与设计见 [README 中文版](../README.zh-CN.md)。
