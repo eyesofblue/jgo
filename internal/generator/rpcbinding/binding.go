@@ -898,15 +898,15 @@ func mutateFiles(root string, paths []string, mutate func() error) error {
 	states := make(map[string]fileState, len(paths))
 	for _, relative := range paths {
 		path := filepath.Join(root, relative)
-		contents, err := os.ReadFile(path)
-		if os.IsNotExist(err) {
-			states[relative] = fileState{}
-			continue
-		}
+		info, err := inspectManagedPath(root, relative)
 		if err != nil {
 			return err
 		}
-		info, err := os.Stat(path)
+		if info == nil {
+			states[relative] = fileState{}
+			continue
+		}
+		contents, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
@@ -921,10 +921,50 @@ func mutateFiles(root string, paths []string, mutate func() error) error {
 	return nil
 }
 
+// inspectManagedPath rejects links and special files in a managed path. Checking
+// every existing component is important: Lstat on only the final file would
+// still allow an intermediate directory link to redirect writes outside root.
+func inspectManagedPath(root, relative string) (os.FileInfo, error) {
+	clean := filepath.Clean(relative)
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("rpc binding: invalid managed path %q", relative)
+	}
+	parts := strings.Split(clean, string(filepath.Separator))
+	current := root
+	for index, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("rpc binding: inspect managed path %s: %w", clean, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("rpc binding: refuse symlink managed path %s", clean)
+		}
+		if index < len(parts)-1 {
+			if !info.IsDir() {
+				return nil, fmt.Errorf("rpc binding: managed path parent %s is not a directory", current)
+			}
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("rpc binding: managed path %s is not a regular file", clean)
+		}
+		return info, nil
+	}
+	return nil, nil
+}
+
 func restoreFiles(root string, states map[string]fileState) error {
 	var rollbackErrors []error
 	for relative, state := range states {
 		path := filepath.Join(root, relative)
+		if _, err := inspectManagedPath(root, relative); err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+			continue
+		}
 		if !state.exists {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				rollbackErrors = append(rollbackErrors, err)

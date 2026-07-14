@@ -28,6 +28,13 @@ func Generate(root string) error {
 	if err != nil {
 		return fmt.Errorf("load OpenAPI contract: %w", err)
 	}
+	operations, err := operationsFromSpec(spec)
+	if err != nil {
+		return err
+	}
+	if err := validateOperationModels(operations, catalog); err != nil {
+		return err
+	}
 	if err := syncModelSchemas(spec, catalog); err != nil {
 		return err
 	}
@@ -38,13 +45,6 @@ func Generate(root string) error {
 
 	validated, err := loadSpecData(contract)
 	if err != nil {
-		return err
-	}
-	operations, err := operationsFromSpec(validated)
-	if err != nil {
-		return err
-	}
-	if err := validateOperationModels(operations, catalog); err != nil {
 		return err
 	}
 	generated, err := codegen.Generate(validated, codegen.Configuration{

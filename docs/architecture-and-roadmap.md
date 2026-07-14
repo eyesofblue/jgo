@@ -1,6 +1,6 @@
 # JGO 架构设计与实施路线
 
-> 状态：`v0.3.0` 已发布，当前主干进行 `v0.4.0` 生产化 P0 改造
+> 状态：`v0.3.0` 已发布，当前主干为 `v0.4.0` 发布候选
 > Go module：`github.com/eyesofblue/jgo`  
 > 最低 Go 版本：`1.24`
 > License：`Apache-2.0`  
@@ -1259,3 +1259,26 @@ jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 - 完成敏感信息扫描与 `go mod verify`；命中的 token/password 文本均为验证错误脱敏和 Header 透传的固定测试数据，不包含真实凭据、邮箱或本机绝对路径。
 
 下一版本号已确定为 `v0.3.0`；生成项目默认依赖、安装命令和发布文档已统一指向该版本。创建 tag 和 GitHub Release 仍需单独执行。
+
+### 2026-07-14：v0.4.0 全量审查收敛与发布门禁
+
+最终审查修正：
+
+- external RPC server binding 统一使用 `package + Service` 唯一键，业务方法使用完整 import path 派生的稳定 `<PackagePath><Service><RPC>` 名称；同名 v1/v2 Service 可以注册到同一个 gRPC Server，规范化路径碰撞使用稳定摘要消歧。
+- RPC bind/unbind 的事务快照、写入和回滚会逐级检查 managed 路径，拒绝目标文件或父目录 symlink 以及非普通文件，防止写入逃逸到项目外。
+- OpenAPI 生成会删除已经从 Go model catalog 移除的 JGO 托管 schema，同时保留用户手写 component；仍被 operation 引用的已删除模型在修改契约前返回明确的 `ErrModelNotFound`。
+- 统一生成快照记录文件和目录权限、空目录及允许的用户 service symlink；失败回滚先重建完整目录树，再从子目录到父目录恢复原权限，避免只读父目录阻止恢复。
+- RPC doctor 改为生成内容精确比对，bind 输出和 manifest 首次写入立即确定，生成/回滚覆盖新增、删除、权限变化和失败组合。
+
+发布级验证：
+
+- 全仓普通测试、乱序测试、race、vet、格式化、`go mod verify`、`go mod tidy -diff` 和真实生成 E2E 全部通过。
+- symlink/非普通文件、删除模型 schema 和目录权限回滚测试连续运行 20 次通过。
+- web、grpc、mixed、proto 四类项目完成创建、生成幂等、doctor、测试和构建；公共 proto → gRPC server → Web caller 运行链路验证 trace、timeout、`Unavailable` 和 Management 端点。
+- Linux/macOS 的 amd64/arm64 四类发布二进制及归档构建通过，Darwin arm64 产物输出 `jgo version v0.4.0`。
+- release workflow 在发布归档前自行安装锁定工具并执行完整 `make ci`；发布 tag 仍必须指向远端全部 CI 已通过的精确提交。
+
+发布边界：
+
+- `v0.4.0` Changelog、知识库、发布流程和模板依赖已经统一。
+- 本次提交和远端 CI 成功之前不得创建 tag；tag 与 GitHub Release 仍需维护者单独确认和执行。

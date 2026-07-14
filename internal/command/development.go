@@ -134,7 +134,7 @@ type generatorSnapshot struct {
 	existed map[string]bool
 	files   map[string]generatorFile
 	links   map[string]string
-	dirs    map[string]bool
+	dirs    map[string]os.FileMode
 }
 
 func snapshotGeneratorState(root string) (generatorSnapshot, error) {
@@ -147,7 +147,7 @@ func snapshotGeneratorState(root string) (generatorSnapshot, error) {
 		filepath.FromSlash("internal/transport/grpc/external.gen.go"),
 		filepath.FromSlash("internal/rpcclient/clients.gen.go"),
 	}
-	snapshot := generatorSnapshot{root: root, paths: paths, existed: make(map[string]bool), files: make(map[string]generatorFile), links: make(map[string]string), dirs: make(map[string]bool)}
+	snapshot := generatorSnapshot{root: root, paths: paths, existed: make(map[string]bool), files: make(map[string]generatorFile), links: make(map[string]string), dirs: make(map[string]os.FileMode)}
 	for _, relative := range paths {
 		path := filepath.Join(root, relative)
 		info, err := os.Lstat(path)
@@ -190,11 +190,15 @@ func snapshotGeneratorState(root string) (generatorSnapshot, error) {
 				return nil
 			}
 			if entry.IsDir() {
+				directoryInfo, err := entry.Info()
+				if err != nil {
+					return err
+				}
 				fileRelative, err := filepath.Rel(root, current)
 				if err != nil {
 					return err
 				}
-				snapshot.dirs[filepath.Clean(fileRelative)] = true
+				snapshot.dirs[filepath.Clean(fileRelative)] = directoryInfo.Mode().Perm()
 				return nil
 			}
 			if !entry.Type().IsRegular() {
@@ -213,7 +217,7 @@ func snapshotGeneratorState(root string) (generatorSnapshot, error) {
 			return generatorSnapshot{}, err
 		}
 		if info.IsDir() {
-			snapshot.dirs[filepath.Clean(relative)] = true
+			snapshot.dirs[filepath.Clean(relative)] = info.Mode().Perm()
 		}
 	}
 	return snapshot, nil
@@ -294,7 +298,7 @@ func (snapshot generatorSnapshot) restore() error {
 				return err
 			}
 			fileRelative = filepath.Clean(fileRelative)
-			if !snapshot.dirs[fileRelative] {
+			if _, existed := snapshot.dirs[fileRelative]; !existed {
 				extraDirectories = append(extraDirectories, fileRelative)
 			}
 			return nil
@@ -319,6 +323,14 @@ func (snapshot generatorSnapshot) restore() error {
 	})
 	for _, relative := range originalDirectories {
 		if err := os.MkdirAll(filepath.Join(snapshot.root, relative), 0o755); err != nil {
+			restoreErrors = append(restoreErrors, err)
+		}
+	}
+	// Restore permissions from children to parents only after the full tree
+	// exists, so a read-only parent cannot prevent recreation of its children.
+	for index := len(originalDirectories) - 1; index >= 0; index-- {
+		relative := originalDirectories[index]
+		if err := os.Chmod(filepath.Join(snapshot.root, relative), snapshot.dirs[relative]); err != nil {
 			restoreErrors = append(restoreErrors, err)
 		}
 	}

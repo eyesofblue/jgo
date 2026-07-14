@@ -4,6 +4,8 @@ All notable JGO changes are documented here. JGO follows Semantic Versioning.
 
 ## Unreleased
 
+## v0.4.0 - 2026-07-14
+
 ### Breaking CLI changes
 
 - Replaced protobuf authoring commands with `jgo pb service add`, `jgo pb method add`, and `jgo pb generate`.
@@ -38,6 +40,12 @@ All notable JGO changes are documented here. JGO follows Semantic Versioning.
 - Import-path-qualified external RPC names even when versions share one Go package name, explicit legacy implementation migration, and strict manifest business-name validation.
 - Complete legacy RPC migration reuse, normalized-path collision suffixes, process lifecycle readiness gating, permission-exact generation rollback, and user-owned service symlink preservation.
 - Content-exact RPC binding diagnostics, immediately deterministic bind output, deleted OpenAPI model validation, and directory/permission-exact generator rollback.
+
+### Fixed
+
+- Rejected symlinks and non-regular files across direct RPC bind/unbind mutation and rollback paths, including linked parent directories, so managed writes cannot escape the project root.
+- Removed deleted JGO-managed model schemas during OpenAPI regeneration while preserving manually authored component schemas and explicit `ErrModelNotFound` diagnostics for live operations.
+- Restored original directory permissions after failed unified generation, including deleted empty directories, modified existing directories, and read-only parent trees.
 
 ## v0.3.0 - 2026-07-14
 

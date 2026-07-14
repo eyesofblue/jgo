@@ -139,11 +139,32 @@ func syncModelSchemas(spec *openapi3.T, catalog *modelCatalog) error {
 	if spec.Components.Schemas == nil {
 		spec.Components.Schemas = make(openapi3.Schemas)
 	}
+	for name, schema := range spec.Components.Schemas {
+		if isManagedModelSchema(schema, catalog.importPath) {
+			delete(spec.Components.Schemas, name)
+		}
+	}
 	for name, schema := range schemas {
 		spec.Components.Schemas[name] = schema
 	}
 	spec.Components.Schemas["JGOErrorResponse"] = &openapi3.SchemaRef{Value: envelopeSchema(nil)}
 	return nil
+}
+
+func isManagedModelSchema(ref *openapi3.SchemaRef, importPath string) bool {
+	if ref == nil || ref.Value == nil {
+		return false
+	}
+	goType, ok := ref.Value.Extensions["x-go-type"].(string)
+	if !ok || !strings.HasPrefix(goType, "model.") {
+		return false
+	}
+	goImport, ok := ref.Value.Extensions["x-go-type-import"].(map[string]any)
+	if !ok {
+		return false
+	}
+	path, ok := goImport["path"].(string)
+	return ok && path == importPath
 }
 
 func addOperation(spec *openapi3.T, operation Operation, catalog *modelCatalog) {

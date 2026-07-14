@@ -110,9 +110,20 @@ func TestGeneratorSnapshotRestoresPermissionsAndAllowsServiceSymlinks(t *testing
 		t.Fatal(err)
 	}
 	originalEmptyDirectory := filepath.Join(root, "internal", "service", "preserved", "empty")
-	if err := os.MkdirAll(originalEmptyDirectory, 0o755); err != nil {
+	if err := os.MkdirAll(originalEmptyDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	preservedDirectory := filepath.Dir(originalEmptyDirectory)
+	if err := os.Chmod(preservedDirectory, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(preservedDirectory, 0o700) }()
+	serviceDirectory := filepath.Join(root, "internal", "service")
+	serviceInfo, err := os.Stat(serviceDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalServiceMode := serviceInfo.Mode().Perm()
 	snapshot, err := snapshotGeneratorState(root)
 	if err != nil {
 		t.Fatalf("snapshotGeneratorState() error = %v", err)
@@ -123,7 +134,13 @@ func TestGeneratorSnapshotRestoresPermissionsAndAllowsServiceSymlinks(t *testing
 	if err := os.Remove(link); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(preservedDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.RemoveAll(filepath.Join(root, "internal", "service", "preserved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(serviceDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	createdDirectory := filepath.Join(root, "internal", "service", "generated", "nested")
@@ -146,8 +163,14 @@ func TestGeneratorSnapshotRestoresPermissionsAndAllowsServiceSymlinks(t *testing
 	if _, err := os.Stat(filepath.Join(root, "internal", "service", "generated")); !os.IsNotExist(err) {
 		t.Fatalf("new generator directory remains after rollback: %v", err)
 	}
-	if info, err := os.Stat(originalEmptyDirectory); err != nil || !info.IsDir() {
-		t.Fatalf("original empty directory was not restored: %v, %v", info, err)
+	if info, err := os.Stat(originalEmptyDirectory); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("original empty directory was not restored exactly: %v, %v", info, err)
+	}
+	if info, err := os.Stat(preservedDirectory); err != nil || info.Mode().Perm() != 0o500 {
+		t.Fatalf("read-only parent directory was not restored exactly: %v, %v", info, err)
+	}
+	if info, err := os.Stat(serviceDirectory); err != nil || info.Mode().Perm() != originalServiceMode {
+		t.Fatalf("service directory mode = %v, %v; want %o", info, err, originalServiceMode)
 	}
 }
 

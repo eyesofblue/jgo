@@ -21,11 +21,10 @@ jobs:
           # including Darwin binaries cross-compiled on Linux.
           go-version: 1.24.x
           cache-dependency-path: go.sum
-      - name: Test
-        run: |
-          go test ./...
-          go vet ./...
-          test -z "$(gofmt -l .)"
+      - name: Install locked protobuf tools
+        run: go run ./cmd/jgo tools install
+      - name: Run complete release gate
+        run: make ci
       - name: Build release archives
         env:
           VERSION: ${{ github.ref_name }}

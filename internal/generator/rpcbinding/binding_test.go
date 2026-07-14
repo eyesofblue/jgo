@@ -633,6 +633,110 @@ func TestMutateFilesRestoresOriginalPermissions(t *testing.T) {
 	}
 }
 
+func TestMutateFilesRejectsManagedSymlinks(t *testing.T) {
+	tests := []struct {
+		name     string
+		relative string
+		needle   string
+		setup    func(t *testing.T, root, external string)
+	}{
+		{
+			name:     "target",
+			relative: "go.mod",
+			needle:   "refuse symlink managed path",
+			setup: func(t *testing.T, root, external string) {
+				t.Helper()
+				if err := os.Symlink(external, filepath.Join(root, "go.mod")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:     "parent",
+			relative: filepath.FromSlash("configs/local.yaml"),
+			needle:   "refuse symlink managed path",
+			setup: func(t *testing.T, root, external string) {
+				t.Helper()
+				externalDirectory := filepath.Dir(external)
+				if err := os.Symlink(externalDirectory, filepath.Join(root, "configs")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:     "non-regular target",
+			relative: "go.mod",
+			needle:   "is not a regular file",
+			setup: func(t *testing.T, root, _ string) {
+				t.Helper()
+				if err := os.Mkdir(filepath.Join(root, "go.mod"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			externalDirectory := t.TempDir()
+			external := filepath.Join(externalDirectory, filepath.Base(test.relative))
+			if err := os.WriteFile(external, []byte("external sentinel\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			test.setup(t, root, external)
+			called := false
+			err := mutateFiles(root, []string{test.relative}, func() error {
+				called = true
+				return os.WriteFile(filepath.Join(root, test.relative), []byte("changed\n"), 0o644)
+			})
+			if err == nil || !strings.Contains(err.Error(), test.needle) {
+				t.Fatalf("mutateFiles() error = %v", err)
+			}
+			if called {
+				t.Fatal("mutation ran after managed symlink was detected")
+			}
+			if contents := string(mustReadTestFile(t, external)); contents != "external sentinel\n" {
+				t.Fatalf("external file changed to %q", contents)
+			}
+		})
+	}
+}
+
+func TestMutateFilesRollbackDoesNotFollowIntroducedParentSymlink(t *testing.T) {
+	root := t.TempDir()
+	configDirectory := filepath.Join(root, "configs")
+	if err := os.Mkdir(configDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDirectory, "local.yaml")
+	if err := os.WriteFile(configPath, []byte("original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	externalDirectory := t.TempDir()
+	external := filepath.Join(externalDirectory, "local.yaml")
+	if err := os.WriteFile(external, []byte("external sentinel\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := mutateFiles(root, []string{filepath.FromSlash("configs/local.yaml")}, func() error {
+		if err := os.Remove(configPath); err != nil {
+			return err
+		}
+		if err := os.Remove(configDirectory); err != nil {
+			return err
+		}
+		if err := os.Symlink(externalDirectory, configDirectory); err != nil {
+			return err
+		}
+		return errors.New("injected failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected failure") || !strings.Contains(err.Error(), "refuse symlink managed path") {
+		t.Fatalf("mutateFiles() error = %v", err)
+	}
+	if contents := string(mustReadTestFile(t, external)); contents != "external sentinel\n" {
+		t.Fatalf("external file changed to %q", contents)
+	}
+}
+
 func TestManifestRejectsInvalidBusinessMethodName(t *testing.T) {
 	protocol := fakeProtocolModule(t)
 	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)

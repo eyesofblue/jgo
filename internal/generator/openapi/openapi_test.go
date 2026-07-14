@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	projectgen "github.com/eyesofblue/jgo/internal/generator/project"
+	"github.com/getkin/kin-openapi/openapi3"
 )
 
 func TestAddAndGenerateWithGoStructModels(t *testing.T) {
@@ -347,6 +348,64 @@ func TestGenerateRejectsOperationsReferencingDeletedModels(t *testing.T) {
 				t.Fatal("managed outputs changed after rejected model deletion")
 			}
 		})
+	}
+}
+
+func TestGenerateRemovesDeletedManagedModelSchemas(t *testing.T) {
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "demo")
+	if _, err := projectgen.Generate(projectgen.Config{
+		Name: "demo", Module: "example.com/demo", Type: projectgen.TypeWeb,
+		TargetDir: root, JGOReplace: repositoryRoot, SkipTidy: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	modelPath := filepath.Join(root, filepath.FromSlash(ModelPath), "legacy.go")
+	if err := os.WriteFile(modelPath, []byte("package model\n\ntype Legacy struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Add(AddConfig{Root: root, Operation: "Legacy", Method: http.MethodGet, Path: "/legacy", ResponseType: "Legacy"}); err != nil {
+		t.Fatal(err)
+	}
+	contractPath := filepath.Join(root, filepath.FromSlash(SpecPath))
+	spec, err := loadSpecFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Paths.Delete("/legacy")
+	spec.Components.Schemas["Manual"] = &openapi3.SchemaRef{Value: openapi3.NewStringSchema()}
+	contract, err := marshalAndValidate(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(contractPath, contract, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(modelPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := Generate(root); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	updated, err := loadSpecFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := updated.Components.Schemas["Legacy"]; exists {
+		t.Fatal("deleted JGO model schema remains in the OpenAPI contract")
+	}
+	if _, exists := updated.Components.Schemas["Manual"]; !exists {
+		t.Fatal("manually authored schema was removed")
+	}
+	generated, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(GeneratedDir), "api.gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(generated, []byte("model.Legacy")) {
+		t.Fatalf("generated API still references deleted model:\n%s", generated)
 	}
 }
 
