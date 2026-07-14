@@ -58,8 +58,11 @@ jgo rpc generate
 jgo list
 ```
 
+`jgo doctor` and generation fail if any local or imported RPC response is missing the standard `code/msg` fields.
+
 `jgo rpc generate` overwrites generated protobuf and transport files, but never overwrites an existing business service method.
 Generated business methods use `<Service><RPC>` names, so mixed projects can safely use the same operation name over HTTP and gRPC. `jgo call grpc` displays zero values for non-optional fields; unset `optional` fields remain omitted.
+An explicit `jgo/errors.Error` returned by a business method becomes an `OK` gRPC Response with its `code/msg`. Unknown errors, panics, cancellation, and timeouts use non-`OK` gRPC status codes.
 {{end}}
 {{if eq .JGOVersion "v0.0.0"}}
 

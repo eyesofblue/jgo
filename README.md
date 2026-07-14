@@ -118,6 +118,10 @@ JGO locks Buf `1.46.0`, `protoc-gen-go` `1.36.7`, and `protoc-gen-go-grpc` `1.5.
 
 Every JGO RPC response uses non-optional `int32 code = 1` and `string msg = 2`; business success is `0`. User-defined business fields start at number `3` and use `optional` only when they need to distinguish absence from an explicit zero value. `jgo call grpc` displays zero values such as `0`, `""`, and `false` for ordinary fields while still omitting unset optional/message fields.
 
+`jgo doctor` and generation commands enforce this convention for local and cross-file RPC responses and fail when the standard `code/msg` fields are missing.
+
+When a business method explicitly returns `jgo/errors.Error`, the generated gRPC transport builds a Response containing its `code/msg` and keeps the gRPC status `OK`. Unknown errors, panics, cancellation, and timeouts that cannot produce a valid business Response use a non-`OK` gRPC status. Business codes are not duplicated in gRPC status details.
+
 ### Mixed service
 
 A mixed project maintains both OpenAPI and protobuf contracts while sharing one business layer and application lifecycle:

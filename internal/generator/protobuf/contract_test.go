@@ -1,11 +1,13 @@
 package protobuf
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestResponseContractWarnings(t *testing.T) {
+func TestValidateResponseContractsRejectsMissingAndOptionalStatusFields(t *testing.T) {
 	contract := `syntax = "proto3";
 package demo.v1;
 service UserService {
@@ -27,24 +29,40 @@ message OptionalResponse {
 }
 `
 	root, _ := writeContract(t, "demo/v1/service.proto", contract)
-	warnings, err := ResponseContractWarnings(root)
-	if err != nil {
-		t.Fatalf("ResponseContractWarnings() error = %v", err)
-	}
-	joined := strings.Join(warnings, "\n")
-	if len(warnings) != 2 || !strings.Contains(joined, "UserService.Missing") || !strings.Contains(joined, "UserService.Optional") {
-		t.Fatalf("warnings = %v", warnings)
+	err := ValidateResponseContracts(root)
+	if err == nil || !strings.Contains(err.Error(), "UserService.Missing") || !strings.Contains(err.Error(), "UserService.Optional") {
+		t.Fatalf("ValidateResponseContracts() error = %v", err)
 	}
 }
 
-func TestLastIdentifier(t *testing.T) {
-	for input, want := range map[string]string{
-		"GetUserResponse":          "GetUserResponse",
-		"demo.v1.GetUserResponse":  "GetUserResponse",
-		".demo.v1.GetUserResponse": "GetUserResponse",
-	} {
-		if got := lastIdentifier(input); got != want {
-			t.Errorf("lastIdentifier(%q) = %q, want %q", input, got, want)
-		}
+func TestValidateResponseContractsChecksImportedResponse(t *testing.T) {
+	serviceContract := `syntax = "proto3";
+package demo.v1;
+import "demo/v1/common.proto";
+service UserService {
+  rpc GetUser(GetUserRequest) returns (SharedResponse);
+}
+message GetUserRequest {}
+`
+	root, _ := writeContract(t, "demo/v1/service.proto", serviceContract)
+	_, _ = writeContractAtRoot(t, root, "demo/v1/common.proto", `syntax = "proto3";
+package demo.v1;
+message SharedResponse {}
+`)
+	err := ValidateResponseContracts(root)
+	if err == nil || !strings.Contains(err.Error(), "demo.v1.UserService.GetUser") || !strings.Contains(err.Error(), "demo.v1.SharedResponse") {
+		t.Fatalf("ValidateResponseContracts() error = %v", err)
 	}
+}
+
+func writeContractAtRoot(t *testing.T, root, relativePath, contract string) (string, string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash("api/proto/"+relativePath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contract), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root, path
 }

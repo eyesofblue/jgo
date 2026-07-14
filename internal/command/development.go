@@ -43,6 +43,9 @@ func newGenerateCommand(stdout io.Writer) *cobra.Command {
 				if err := protobufgen.CheckTools(project.root); err != nil {
 					return err
 				}
+				if err := protobufgen.ValidateResponseContracts(project.root); err != nil {
+					return err
+				}
 			}
 			if project.hasWeb {
 				if err := openapigen.Generate(project.root); err != nil {
@@ -51,13 +54,14 @@ func newGenerateCommand(stdout io.Writer) *cobra.Command {
 				_, _ = fmt.Fprintln(stdout, "generated HTTP code")
 			}
 			if project.hasGRPC {
-				if err := protobufgen.Generate(project.root); err != nil {
+				result, err := protobufgen.GenerateWithResult(project.root)
+				if err != nil {
 					return err
 				}
-				if err := printResponseContractWarnings(stdout, project.root); err != nil {
+				if err := printCreatedServiceStubs(stdout, result); err != nil {
 					return err
 				}
-				_, _ = fmt.Fprintln(stdout, "generated protobuf and gRPC code; review internal/service, then run go test ./...")
+				_, _ = fmt.Fprintln(stdout, "generated protobuf and gRPC code; run go test ./...")
 			}
 			return nil
 		},
@@ -174,6 +178,9 @@ func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
 		}
 		if project.hasGRPC {
 			_, err := callruntime.ListGRPC(ctx, project.root)
+			if err == nil {
+				err = protobufgen.ValidateResponseContracts(project.root)
+			}
 			checks = append(checks, doctorCheck{name: "protobuf contract", err: err})
 			checks = append(checks, lockedToolDoctorChecks(ctx)...)
 		}

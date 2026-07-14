@@ -12,12 +12,14 @@ All notable JGO changes are documented here. JGO follows Semantic Versioning.
 - Generated server entrypoints load addresses and shutdown timeout from YAML, environment variables, or command-line flags.
 - Generated RPC responses reserve non-optional `code = 1` and `msg = 2` fields; business fields start at field number 3.
 - `jgo call grpc` emits default values for non-presence protobuf fields while preserving optional-field presence semantics.
+- Generated unary transports return explicit JGO business errors through Response `code/msg` with gRPC status `OK`; transport and system failures remain non-`OK` statuses.
 
 ### Added
 
 - `jgo tools install` and `jgo tools check` for locked protobuf tool installation and diagnostics without implicit Go toolchain switching.
 - `--skip-tidy` for explicitly creating projects in offline environments.
-- Non-blocking generation warnings for existing RPC responses that do not follow the JGO response convention.
+- Mandatory cross-file validation that blocks generation when any RPC response does not follow the JGO response convention.
+- Cross-file protobuf response validation and precise newly-created service stub reporting.
 
 ### Compatibility
 

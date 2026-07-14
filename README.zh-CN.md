@@ -118,6 +118,10 @@ JGO 锁定 Buf `1.46.0`、`protoc-gen-go` `1.36.7` 和 `protoc-gen-go-grpc` `1.5
 
 JGO 的每个 RPC response 固定使用非 optional 的 `int32 code = 1` 和 `string msg = 2`，成功业务码为 `0`。用户定义的业务字段从编号 `3` 开始，并根据是否需要区分“未设置”和“显式零值”自行决定是否使用 `optional`。`jgo call grpc` 会显示普通字段的 `0`、`""`、`false` 等零值，但仍省略未设置的 optional/message 字段。
 
+`jgo doctor` 和生成命令会强制检查所有本地及跨文件引用的 RPC Response；缺少标准 `code/msg` 时直接失败。
+
+业务方法显式返回 `jgo/errors.Error` 时，生成的 gRPC transport 会构造只包含对应 `code/msg` 的 Response，并保持 gRPC status 为 `OK`。未知错误、panic、请求取消和超时等无法形成有效业务 Response 的错误使用非 `OK` gRPC status。业务错误码不会再放入 gRPC status details。
+
 ### mixed 服务
 
 mixed 项目同时维护 OpenAPI 和 protobuf 契约，并共用业务层和应用生命周期：

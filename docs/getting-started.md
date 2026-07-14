@@ -72,6 +72,8 @@ jgo build
 
 新增 gRPC 方法时，`jgo rpc add` 会自动为 response 保留非 optional 的 `int32 code = 1` 和 `string msg = 2`；业务字段从编号 `3` 开始。当前接口始终以 OpenAPI/proto 为准，使用 `jgo list` 查看，不需要手工维护第二份接口清单。
 
+业务实现返回 `jgo/errors.Error` 时，生成的 transport 会把业务码和消息写入 Response，并保持 gRPC status 为 `OK`；panic、未知错误、取消和超时继续使用非 `OK` status。
+
 ## 调试接口
 
 ```bash

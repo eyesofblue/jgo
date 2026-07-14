@@ -41,3 +41,10 @@ func TestBusinessCodesAreIndependentFromHTTPStatus(t *testing.T) {
 		t.Fatalf("CodeOK = %d, want 0", CodeOK)
 	}
 }
+
+func TestCodeOutsideInt32RangeBecomesInternal(t *testing.T) {
+	err := New(CodeMax+1, "too large")
+	if err.Code() != CodeInternal || err.Message() != MessageInternal {
+		t.Fatalf("error = code %d message %q", err.Code(), err.Message())
+	}
+}

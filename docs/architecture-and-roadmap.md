@@ -1,6 +1,6 @@
 # JGO 架构设计与实施路线
 
-> 状态：`v0.1.0` 已发布，`v0.2.0` P0 兼容性与脚手架闭环改造已完成
+> 状态：`v0.1.0` 已发布，`v0.2.0` P0/P1 改造已完成，等待发布验收
 > Go module：`github.com/eyesofblue/jgo`  
 > 最低 Go 版本：`1.24`
 > License：`Apache-2.0`  
@@ -479,7 +479,7 @@ HTTP 与 gRPC 调用统一支持：
 - 优雅停机和强制停机兜底。
 - recovery interceptor。
 - request ID/metadata 传递。
-- 统一的业务错误到 gRPC status 转换。
+- 业务错误写入标准 Response `code/msg`；无法形成业务 Response 的系统错误转换为 gRPC status。
 - 开发环境可开启 Reflection。
 
 ## 9. 扩展边界
@@ -594,7 +594,7 @@ go vet ./...
 2. 实现 service 注册函数。
 3. 实现 unary recovery interceptor。
 4. 实现 request ID/metadata 传递。
-5. 实现 JGO error 到 gRPC status 的转换。
+5. 实现 JGO 业务 error 到 Response 的转换，以及系统 error 到 gRPC status 的转换。
 6. 支持可配置的 Reflection。
 7. 实现 `GracefulStop` 超时后 `Stop` 的兜底策略。
 
@@ -819,7 +819,7 @@ go build ./...
 - 实现 unary 和 stream panic recovery interceptor，使用 `slog` 记录堆栈。
 - 实现 unary 和 stream 错误转换 interceptor。
 - 实现 HTTP status 到 gRPC code 的稳定映射，未知错误统一转换为 `codes.Internal`。
-- JGO 业务错误码通过标准 gRPC `ErrorInfo` detail 传递，domain 为 `jgo`。
+- 阶段 3 初版曾通过 gRPC `ErrorInfo` detail 传递业务码；v0.2.0 P1 已统一改为 Response `code/msg`，status details 不再承载业务码。
 - 保留已有 gRPC status error，并正确映射 `context.Canceled` 和 `context.DeadlineExceeded`。
 - 实现活动 unary/stream RPC 跟踪和 draining 状态，停机后拒绝新 RPC。
 - 优雅停机先等待活动 RPC 归零；超时后直接强制 Stop，避免 gRPC-Go v1.71.3 中并发 `GracefulStop`/`Stop` 的内部锁竞争。
@@ -1052,7 +1052,10 @@ jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 - 初始 Echo 和 `jgo rpc add` 创建的每个 response 固定声明非 optional 的 `int32 code = 1`、`string msg = 2`，用户业务字段从编号 `3` 开始。
 - `code = 0` 表示业务成功；gRPC status 继续表达传输或系统错误，不与业务码混用。
 - `jgo call grpc` 使用 `protojson.EmitDefaultValues`，普通无 presence 字段的零值会显示，未设置的 optional/message 字段仍然省略。
-- `jgo rpc generate` 和统一 `jgo generate` 对存量非标准 response 给出迁移警告，但不阻断生成。
+- `jgo rpc generate`、统一 `jgo generate` 和 `jgo doctor` 强制校验所有 response；非标准契约直接失败，不保留存量兼容分支。
 - `rpc add` 的结果提示明确指出保留字段和下一步命令。
 - 生成项目 README 只维护稳定工作流，不复制容易过期的接口清单；OpenAPI/proto 是协议真源，`jgo list` 展示当前接口。
 - 中英文 README、命令参考、示例和变更记录同步上述约定。
+- 生成 unary transport 将显式 `jgo/errors.Error` 转换为 gRPC `OK` 的 Response `code/msg`；panic、未知错误、取消和超时继续使用非 `OK` status。
+- Response 标准检查改用完整 protobuf descriptor，覆盖跨文件和 import 场景。
+- generate 输出本次新建的业务文件以及需要实现的 `Service.<Method>`。

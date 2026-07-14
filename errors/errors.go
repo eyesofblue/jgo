@@ -14,6 +14,9 @@ const (
 	CodeInvalidArgument = 10001
 	CodeInternal        = 90001
 	CodeTimeout         = 90002
+	// CodeMax is the largest business code representable by JGO's standard
+	// protobuf int32 response field.
+	CodeMax = 1<<31 - 1
 )
 
 const (
@@ -96,7 +99,7 @@ func (e *Error) HTTPStatus() int {
 }
 
 func (e *Error) normalize() {
-	if e.code <= 0 || e.message == "" || e.httpStatus < 400 || e.httpStatus > 599 {
+	if e.code <= 0 || e.code > CodeMax || e.message == "" || e.httpStatus < 400 || e.httpStatus > 599 {
 		e.code = CodeInternal
 		e.message = MessageInternal
 		e.httpStatus = http.StatusInternalServerError

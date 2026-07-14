@@ -7,25 +7,19 @@ import (
 	"testing"
 
 	jerrors "github.com/eyesofblue/jgo/errors"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func TestStatusErrorMapsServiceErrorAndBusinessCode(t *testing.T) {
+func TestStatusErrorMapsEscapedServiceErrorWithoutBusinessDetails(t *testing.T) {
 	err := jerrors.New(120404, "user not found", jerrors.WithHTTPStatus(http.StatusNotFound))
 	mapped := StatusError(err)
 	grpcStatus := status.Convert(mapped)
 	if grpcStatus.Code() != codes.NotFound || grpcStatus.Message() != "user not found" {
 		t.Fatalf("status = %v %q", grpcStatus.Code(), grpcStatus.Message())
 	}
-	details := grpcStatus.Details()
-	if len(details) != 1 {
-		t.Fatalf("details = %v", details)
-	}
-	info, ok := details[0].(*errdetails.ErrorInfo)
-	if !ok || info.Reason != "120404" || info.Domain != "jgo" {
-		t.Fatalf("ErrorInfo = %#v", details[0])
+	if details := grpcStatus.Details(); len(details) != 0 {
+		t.Fatalf("business details leaked into transport status: %v", details)
 	}
 }
 

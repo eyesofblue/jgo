@@ -78,7 +78,11 @@ jgo rpc add <rpc-name> \
 jgo rpc generate [--root <project>]
 ```
 
-`rpc add` 创建空 request message，并为 response 自动声明非 optional 的 `int32 code = 1` 和 `string msg = 2`。业务响应字段从编号 `3` 开始。`rpc generate` 使用锁定的 Buf 工具链，覆盖生成代码，但不会覆盖已存在的业务方法；存量 response 不符合标准时只输出迁移警告，不阻断生成。生成的业务方法按 `<Service><RPC>` 命名，例如 `UserService.GetUser` 对应 `Service.UserServiceGetUser`，以避免 mixed 项目协议间的方法冲突。
+`rpc add` 创建空 request message，并为 response 自动声明非 optional 的 `int32 code = 1` 和 `string msg = 2`。业务响应字段从编号 `3` 开始。`rpc generate` 使用锁定的 Buf 工具链，覆盖生成代码，但不会覆盖已存在的业务方法；任何 response 不符合标准都会直接阻断生成。生成的业务方法按 `<Service><RPC>` 命名，例如 `UserService.GetUser` 对应 `Service.UserServiceGetUser`，以避免 mixed 项目协议间的方法冲突。
+
+生成完成后会逐项输出本次新建的业务文件和方法。生成 transport 将业务方法返回的 `jgo/errors.Error` 转换为 gRPC `OK` Response 的 `code/msg`；非业务错误继续使用非 `OK` gRPC status。Response 即使定义在导入的其他 proto 文件中，也会参与标准字段检查。
+
+业务错误码必须位于正数 `int32` 范围内；超出范围的 `jgo/errors.Error` 会被安全归一化为内部错误码。
 
 ## 统一开发流程
 

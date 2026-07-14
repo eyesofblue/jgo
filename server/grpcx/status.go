@@ -4,17 +4,15 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strconv"
 
 	jerrors "github.com/eyesofblue/jgo/errors"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// StatusError converts an application error into a gRPC status error. Existing
-// gRPC status errors are preserved. JGO business codes are attached through a
-// standard ErrorInfo detail with domain "jgo".
+// StatusError converts errors that escaped the generated transport into gRPC
+// status errors. Generated unary transports convert explicit JGO business
+// errors into response code/msg before this mapper runs.
 func StatusError(err error) error {
 	if err == nil {
 		return nil
@@ -29,16 +27,8 @@ func StatusError(err error) error {
 		return status.Error(codes.DeadlineExceeded, context.DeadlineExceeded.Error())
 	}
 
-	businessCode, message, httpStatus := jerrors.PublicValues(err)
-	grpcStatus := status.New(codeFromHTTPStatus(httpStatus), message)
-	withDetails, detailErr := grpcStatus.WithDetails(&errdetails.ErrorInfo{
-		Reason: strconv.Itoa(businessCode),
-		Domain: "jgo",
-	})
-	if detailErr != nil {
-		return grpcStatus.Err()
-	}
-	return withDetails.Err()
+	_, message, httpStatus := jerrors.PublicValues(err)
+	return status.Error(codeFromHTTPStatus(httpStatus), message)
 }
 
 func codeFromHTTPStatus(httpStatus int) codes.Code {

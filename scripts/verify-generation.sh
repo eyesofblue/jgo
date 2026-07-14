@@ -71,6 +71,10 @@ for project_type in web grpc mixed; do
   fi
 
   "${temporary_root}/jgo" generate --root "${project_root}"
+  if [[ "${project_type}" == "grpc" || "${project_type}" == "mixed" ]]; then
+    grep -q 'stderrors.As(err, &businessError)' "${project_root}/internal/transport/grpc/register.gen.go"
+    grep -q 'Msg: businessError.Message()' "${project_root}/internal/transport/grpc/register.gen.go"
+  fi
   "${temporary_root}/jgo" doctor --root "${project_root}"
 
   before="$(snapshot "${project_root}")"

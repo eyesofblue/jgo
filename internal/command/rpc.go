@@ -24,13 +24,14 @@ func newRPCGenerateCommand(stdout io.Writer) *cobra.Command {
 		Short: "Lint protobuf contracts and generate gRPC code with Buf",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := protobufgen.Generate(root); err != nil {
+			result, err := protobufgen.GenerateWithResult(root)
+			if err != nil {
 				return err
 			}
-			if err := printResponseContractWarnings(stdout, root); err != nil {
+			if err := printCreatedServiceStubs(stdout, result); err != nil {
 				return err
 			}
-			_, err := fmt.Fprintln(stdout, "generated protobuf, gRPC transport, and missing service stubs; review internal/service, then run go test ./...")
+			_, err = fmt.Fprintln(stdout, "generated protobuf and gRPC transport; run go test ./...")
 			return err
 		},
 	}
@@ -38,13 +39,9 @@ func newRPCGenerateCommand(stdout io.Writer) *cobra.Command {
 	return command
 }
 
-func printResponseContractWarnings(stdout io.Writer, root string) error {
-	warnings, err := protobufgen.ResponseContractWarnings(root)
-	if err != nil {
-		return err
-	}
-	for _, warning := range warnings {
-		if _, err := fmt.Fprintf(stdout, "warning: %s\n", warning); err != nil {
+func printCreatedServiceStubs(stdout io.Writer, result protobufgen.GenerateResult) error {
+	for _, stub := range result.CreatedStubs {
+		if _, err := fmt.Fprintf(stdout, "created %s; implement Service.%s\n", stub.Path, stub.Method); err != nil {
 			return err
 		}
 	}

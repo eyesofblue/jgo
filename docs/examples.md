@@ -88,6 +88,20 @@ message GetUserResponse {
 
 `code`、`msg` 使用普通字段。业务字段是否使用 `optional` 由接口语义决定；调试 JSON 会显示所有普通字段的零值，并省略未设置的 `optional` 字段。
 
+业务方法可以返回 JGO 业务错误：
+
+```go
+return nil, jerrors.New(10001, "invalid uid")
+```
+
+生成的 transport 将其转换为 gRPC status `OK` 的响应：
+
+```json
+{"code": 10001, "msg": "invalid uid"}
+```
+
+未知错误、panic、context cancellation 和 deadline exceeded 不会伪装成业务响应，仍通过非 `OK` gRPC status 返回。
+
 ## mixed
 
 ```bash

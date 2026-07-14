@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	protobufgen "github.com/eyesofblue/jgo/internal/generator/protobuf"
 )
 
 func TestNewCommandCreatesProject(t *testing.T) {
@@ -109,6 +111,20 @@ func TestRPCAddCommandUpdatesContract(t *testing.T) {
 		if !strings.Contains(string(contents), fragment) {
 			t.Fatalf("contract does not contain %q:\n%s", fragment, contents)
 		}
+	}
+}
+
+func TestPrintCreatedServiceStubs(t *testing.T) {
+	var output bytes.Buffer
+	err := printCreatedServiceStubs(&output, protobufgen.GenerateResult{CreatedStubs: []protobufgen.ServiceStub{{
+		Method: "UserServiceGetUser",
+		Path:   "internal/service/user_service_get_user.go",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "created internal/service/user_service_get_user.go; implement Service.UserServiceGetUser") {
+		t.Fatalf("output = %q", got)
 	}
 }
 

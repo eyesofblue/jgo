@@ -80,9 +80,26 @@ func errorsIsExecutableMissing(err error) bool {
 	return errors.As(err, &executableError) && executableError.Err == exec.ErrNotFound
 }
 
+// ServiceStub describes a newly created business service placeholder.
+type ServiceStub struct {
+	Method string
+	Path   string
+}
+
+// GenerateResult describes user-owned files created during protobuf generation.
+type GenerateResult struct {
+	CreatedStubs []ServiceStub
+}
+
 // Generate lints protobuf contracts, invokes Buf, and updates JGO's gRPC adapters.
 func Generate(root string) error {
 	return generate(context.Background(), root, execRunner{})
+}
+
+// GenerateWithResult behaves like Generate and reports newly created service
+// placeholders so callers can print precise implementation guidance.
+func GenerateWithResult(root string) (GenerateResult, error) {
+	return generateWithResult(context.Background(), root, execRunner{})
 }
 
 // CheckTools verifies the locked Buf and protobuf generator toolchain without
@@ -95,39 +112,51 @@ func CheckTools(root string) error {
 }
 
 func generate(ctx context.Context, root string, commands runner) error {
+	_, err := generateWithResult(ctx, root, commands)
+	return err
+}
+
+func generateWithResult(ctx context.Context, root string, commands runner) (GenerateResult, error) {
 	if root == "" {
 		root = "."
 	}
 	module, err := readModule(root)
 	if err != nil {
-		return err
+		return GenerateResult{}, err
 	}
 	for _, configuration := range []string{"buf.yaml", "buf.gen.yaml"} {
 		if info, statErr := os.Stat(filepath.Join(root, configuration)); statErr != nil || !info.Mode().IsRegular() {
 			if statErr == nil {
 				statErr = fmt.Errorf("not a regular file")
 			}
-			return fmt.Errorf("protobuf: inspect %s: %w", configuration, statErr)
+			return GenerateResult{}, fmt.Errorf("protobuf: inspect %s: %w", configuration, statErr)
 		}
 	}
 	if err := checkTools(ctx, root, commands); err != nil {
-		return err
+		return GenerateResult{}, err
 	}
 	if _, err := commands.Run(ctx, root, "buf", "lint"); err != nil {
-		return err
+		return GenerateResult{}, err
+	}
+	if err := ValidateResponseContracts(root); err != nil {
+		return GenerateResult{}, err
 	}
 	if _, err := commands.Run(ctx, root, "buf", "generate"); err != nil {
-		return err
+		return GenerateResult{}, err
 	}
 
 	services, err := discoverGeneratedServices(root, module)
 	if err != nil {
-		return err
+		return GenerateResult{}, err
 	}
-	if err := createServiceStubs(root, services); err != nil {
-		return err
+	stubs, err := createServiceStubs(root, services)
+	if err != nil {
+		return GenerateResult{}, err
 	}
-	return writeTransport(root, module, services)
+	if err := writeTransport(root, module, services); err != nil {
+		return GenerateResult{}, err
+	}
+	return GenerateResult{CreatedStubs: stubs}, nil
 }
 
 func checkTools(ctx context.Context, root string, commands runner) error {
@@ -276,7 +305,13 @@ func pointedIdentifier(expression ast.Expr) (string, bool) {
 
 func assignUniqueAliases(services []generatedService) {
 	aliasesByImport := map[string]string{}
-	used := map[string]bool{}
+	used := map[string]bool{
+		"context":   true,
+		"grpc":      true,
+		"service":   true,
+		"stderrors": true,
+		"jgoerrors": true,
+	}
 	for index := range services {
 		if alias, ok := aliasesByImport[services[index].ImportPath]; ok {
 			services[index].Alias = alias
@@ -293,15 +328,16 @@ func assignUniqueAliases(services []generatedService) {
 	}
 }
 
-func createServiceStubs(root string, services []generatedService) error {
+func createServiceStubs(root string, services []generatedService) ([]ServiceStub, error) {
 	directory := filepath.Join(root, "internal", "service")
 	existing, err := existingServiceMethods(directory)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	type pendingStub struct {
 		path     string
 		contents []byte
+		method   string
 	}
 	var pending []pendingStub
 	for _, service := range services {
@@ -311,9 +347,9 @@ func createServiceStubs(root string, services []generatedService) error {
 			}
 			path := filepath.Join(directory, snakeCase(method.BusinessName)+".go")
 			if _, err := os.Stat(path); err == nil {
-				return fmt.Errorf("protobuf: refusing to overwrite existing service file %s", path)
+				return nil, fmt.Errorf("protobuf: refusing to overwrite existing service file %s", path)
 			} else if !os.IsNotExist(err) {
-				return fmt.Errorf("protobuf: inspect service file %s: %w", path, err)
+				return nil, fmt.Errorf("protobuf: inspect service file %s: %w", path, err)
 			}
 			source := fmt.Sprintf(`package service
 
@@ -331,18 +367,22 @@ func (s *Service) %s(ctx context.Context, request *%s.%s) (*%s.%s, error) {
 `, service.Alias, service.ImportPath, method.BusinessName, service.Name, method.Name, method.BusinessName, service.Alias, method.Request, service.Alias, method.Response, method.BusinessName)
 			formatted, err := format.Source([]byte(source))
 			if err != nil {
-				return fmt.Errorf("protobuf: format service stub %s: %w", method.BusinessName, err)
+				return nil, fmt.Errorf("protobuf: format service stub %s: %w", method.BusinessName, err)
 			}
-			pending = append(pending, pendingStub{path: path, contents: formatted})
+			pending = append(pending, pendingStub{path: path, contents: formatted, method: method.BusinessName})
 			existing[method.BusinessName] = true
 		}
 	}
 	for _, stub := range pending {
 		if err := atomicWrite(stub.path, stub.contents); err != nil {
-			return fmt.Errorf("protobuf: write service stub %s: %w", stub.path, err)
+			return nil, fmt.Errorf("protobuf: write service stub %s: %w", stub.path, err)
 		}
 	}
-	return nil
+	created := make([]ServiceStub, 0, len(pending))
+	for _, stub := range pending {
+		created = append(created, ServiceStub{Method: stub.method, Path: displayPath(root, stub.path)})
+	}
+	return created, nil
 }
 
 func existingServiceMethods(directory string) (map[string]bool, error) {
@@ -382,11 +422,10 @@ func writeTransport(root, module string, services []generatedService) error {
 	output.WriteString("// Code generated by jgo rpc generate. DO NOT EDIT.\n")
 	output.WriteString("package grpctransport\n\n")
 	output.WriteString("import (\n")
-	for _, service := range services {
-		if len(service.Methods) > 0 {
-			output.WriteString("\t\"context\"\n")
-			break
-		}
+	if hasAnyMethods(services) {
+		output.WriteString("\t\"context\"\n")
+		output.WriteString("\tstderrors \"errors\"\n")
+		output.WriteString(fmt.Sprintf("\tjgoerrors %q\n", "github.com/eyesofblue/jgo/errors"))
 	}
 	output.WriteString(fmt.Sprintf("\t\"%s/internal/service\"\n", module))
 	seenImports := map[string]bool{}
@@ -402,7 +441,11 @@ func writeTransport(root, module string, services []generatedService) error {
 		output.WriteString(fmt.Sprintf("type %s struct {\n\t%s.Unimplemented%sServer\n\tapplication *service.Service\n}\n\n", adapter, service.Alias, service.Name))
 		for _, method := range service.Methods {
 			output.WriteString(fmt.Sprintf("func (server *%s) %s(ctx context.Context, request *%s.%s) (*%s.%s, error) {\n", adapter, method.Name, service.Alias, method.Request, service.Alias, method.Response))
-			output.WriteString(fmt.Sprintf("\treturn server.application.%s(ctx, request)\n}\n\n", method.BusinessName))
+			output.WriteString(fmt.Sprintf("\tresponse, err := server.application.%s(ctx, request)\n", method.BusinessName))
+			output.WriteString("\tif err == nil {\n\t\treturn response, nil\n\t}\n")
+			output.WriteString("\tvar businessError *jgoerrors.Error\n")
+			output.WriteString(fmt.Sprintf("\tif stderrors.As(err, &businessError) {\n\t\treturn &%s.%s{Code: int32(businessError.Code()), Msg: businessError.Message()}, nil\n\t}\n", service.Alias, method.Response))
+			output.WriteString("\treturn nil, err\n}\n\n")
 		}
 	}
 	output.WriteString("func registerGenerated(registrar grpc.ServiceRegistrar, application *service.Service) {\n")
@@ -420,6 +463,15 @@ func writeTransport(root, module string, services []generatedService) error {
 		return fmt.Errorf("protobuf: create gRPC transport directory: %w", err)
 	}
 	return atomicWrite(path, formatted)
+}
+
+func hasAnyMethods(services []generatedService) bool {
+	for _, service := range services {
+		if len(service.Methods) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func snakeCase(value string) string {
