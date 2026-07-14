@@ -40,6 +40,13 @@ func Generate(root string) error {
 	if err != nil {
 		return err
 	}
+	operations, err := operationsFromSpec(validated)
+	if err != nil {
+		return err
+	}
+	if err := validateOperationModels(operations, catalog); err != nil {
+		return err
+	}
 	generated, err := codegen.Generate(validated, codegen.Configuration{
 		PackageName: "httpgen",
 		Generate: codegen.GenerateOptions{
@@ -56,10 +63,6 @@ func Generate(root string) error {
 	if err != nil {
 		return fmt.Errorf("format generated OpenAPI code: %w", err)
 	}
-	operations, err := operationsFromSpec(validated)
-	if err != nil {
-		return err
-	}
 	routesSource, err := renderRoutes(project.module, operations)
 	if err != nil {
 		return err
@@ -71,6 +74,18 @@ func Generate(root string) error {
 		{path: project.specPath, contents: contract},
 	}
 	return commitGeneratedOutputs(outputs, writeGeneratedOutput)
+}
+
+func validateOperationModels(operations []Operation, catalog *modelCatalog) error {
+	for _, operation := range operations {
+		if operation.RequestType != "" && !catalog.Has(operation.RequestType) {
+			return fmt.Errorf("operation %s: %w: request type %s", operation.Name, ErrModelNotFound, operation.RequestType)
+		}
+		if operation.ResponseType != "" && !isPrimitive(operation.ResponseType) && !catalog.Has(operation.ResponseType) {
+			return fmt.Errorf("operation %s: %w: response type %s", operation.Name, ErrModelNotFound, operation.ResponseType)
+		}
+	}
+	return nil
 }
 
 type generatedOutput struct {

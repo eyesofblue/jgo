@@ -302,6 +302,54 @@ func TestCommitGeneratedOutputsRollsBackEarlierWrites(t *testing.T) {
 	}
 }
 
+func TestGenerateRejectsOperationsReferencingDeletedModels(t *testing.T) {
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "demo")
+	if _, err := projectgen.Generate(projectgen.Config{
+		Name: "demo", Module: "example.com/demo", Type: projectgen.TypeWeb,
+		TargetDir: root, JGOReplace: repositoryRoot, SkipTidy: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	modelPath := filepath.Join(root, filepath.FromSlash(ModelPath), "user.go")
+	if err := os.WriteFile(modelPath, []byte("package model\n\ntype UserInfo struct{}\ntype UpdateUserRequest struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Add(AddConfig{Root: root, Operation: "UpdateUser", Method: http.MethodPost, Path: "/update_user", RequestType: "UpdateUserRequest", ResponseType: "UserInfo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Generate(root); err != nil {
+		t.Fatal(err)
+	}
+	before := generatedSnapshot(t, root)
+
+	tests := []struct {
+		name   string
+		model  string
+		needle string
+	}{
+		{name: "request", model: "package model\n\ntype UserInfo struct{}\n", needle: "request type UpdateUserRequest"},
+		{name: "response", model: "package model\n\ntype UpdateUserRequest struct{}\n", needle: "response type UserInfo"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(modelPath, []byte(test.model), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := Generate(root)
+			if !errors.Is(err, ErrModelNotFound) || !strings.Contains(err.Error(), test.needle) {
+				t.Fatalf("Generate() error = %v", err)
+			}
+			if after := generatedSnapshot(t, root); after != before {
+				t.Fatal("managed outputs changed after rejected model deletion")
+			}
+		})
+	}
+}
+
 func TestAddRejectsComplexGETBody(t *testing.T) {
 	operation, err := normalizeOperation(AddConfig{
 		Operation: "Search", Method: "GET", Path: "/search", RequestType: "SearchRequest",

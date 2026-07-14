@@ -37,6 +37,7 @@ All notable JGO changes are documented here. JGO follows Semantic Versioning.
 - Cross-generator rollback for unified `jgo generate`, pre-parse HTTP authentication, preserved 413 body-limit responses, and collision-safe HTTP service/field generation.
 - Import-path-qualified external RPC names even when versions share one Go package name, explicit legacy implementation migration, and strict manifest business-name validation.
 - Complete legacy RPC migration reuse, normalized-path collision suffixes, process lifecycle readiness gating, permission-exact generation rollback, and user-owned service symlink preservation.
+- Content-exact RPC binding diagnostics, immediately deterministic bind output, deleted OpenAPI model validation, and directory/permission-exact generator rollback.
 
 ## v0.3.0 - 2026-07-14
 

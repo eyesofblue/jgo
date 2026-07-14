@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -133,6 +134,7 @@ type generatorSnapshot struct {
 	existed map[string]bool
 	files   map[string]generatorFile
 	links   map[string]string
+	dirs    map[string]bool
 }
 
 func snapshotGeneratorState(root string) (generatorSnapshot, error) {
@@ -145,7 +147,7 @@ func snapshotGeneratorState(root string) (generatorSnapshot, error) {
 		filepath.FromSlash("internal/transport/grpc/external.gen.go"),
 		filepath.FromSlash("internal/rpcclient/clients.gen.go"),
 	}
-	snapshot := generatorSnapshot{root: root, paths: paths, existed: make(map[string]bool), files: make(map[string]generatorFile), links: make(map[string]string)}
+	snapshot := generatorSnapshot{root: root, paths: paths, existed: make(map[string]bool), files: make(map[string]generatorFile), links: make(map[string]string), dirs: make(map[string]bool)}
 	for _, relative := range paths {
 		path := filepath.Join(root, relative)
 		info, err := os.Lstat(path)
@@ -187,6 +189,14 @@ func snapshotGeneratorState(root string) (generatorSnapshot, error) {
 				snapshot.links[filepath.Clean(fileRelative)] = target
 				return nil
 			}
+			if entry.IsDir() {
+				fileRelative, err := filepath.Rel(root, current)
+				if err != nil {
+					return err
+				}
+				snapshot.dirs[filepath.Clean(fileRelative)] = true
+				return nil
+			}
 			if !entry.Type().IsRegular() {
 				return nil
 			}
@@ -201,6 +211,9 @@ func snapshotGeneratorState(root string) (generatorSnapshot, error) {
 			return snapshot.capture(fileRelative, current, fileInfo)
 		}); err != nil {
 			return generatorSnapshot{}, err
+		}
+		if info.IsDir() {
+			snapshot.dirs[filepath.Clean(relative)] = true
 		}
 	}
 	return snapshot, nil
@@ -261,6 +274,52 @@ func (snapshot generatorSnapshot) restore() error {
 					restoreErrors = append(restoreErrors, removeErr)
 				}
 			}
+		}
+	}
+	var extraDirectories []string
+	for _, relative := range snapshot.paths {
+		path := filepath.Join(snapshot.root, relative)
+		if err := filepath.WalkDir(path, func(current string, entry os.DirEntry, walkErr error) error {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			if walkErr != nil {
+				return walkErr
+			}
+			if !entry.IsDir() {
+				return nil
+			}
+			fileRelative, err := filepath.Rel(snapshot.root, current)
+			if err != nil {
+				return err
+			}
+			fileRelative = filepath.Clean(fileRelative)
+			if !snapshot.dirs[fileRelative] {
+				extraDirectories = append(extraDirectories, fileRelative)
+			}
+			return nil
+		}); err != nil {
+			restoreErrors = append(restoreErrors, err)
+		}
+	}
+	sort.Slice(extraDirectories, func(i, j int) bool {
+		return strings.Count(extraDirectories[i], string(filepath.Separator)) > strings.Count(extraDirectories[j], string(filepath.Separator))
+	})
+	for _, relative := range extraDirectories {
+		if err := os.Remove(filepath.Join(snapshot.root, relative)); err != nil && !os.IsNotExist(err) {
+			restoreErrors = append(restoreErrors, err)
+		}
+	}
+	originalDirectories := make([]string, 0, len(snapshot.dirs))
+	for relative := range snapshot.dirs {
+		originalDirectories = append(originalDirectories, relative)
+	}
+	sort.Slice(originalDirectories, func(i, j int) bool {
+		return strings.Count(originalDirectories[i], string(filepath.Separator)) < strings.Count(originalDirectories[j], string(filepath.Separator))
+	})
+	for _, relative := range originalDirectories {
+		if err := os.MkdirAll(filepath.Join(snapshot.root, relative), 0o755); err != nil {
+			restoreErrors = append(restoreErrors, err)
 		}
 	}
 	for relative, file := range snapshot.files {

@@ -109,6 +109,10 @@ func TestGeneratorSnapshotRestoresPermissionsAndAllowsServiceSymlinks(t *testing
 	if err := os.Symlink(external, link); err != nil {
 		t.Fatal(err)
 	}
+	originalEmptyDirectory := filepath.Join(root, "internal", "service", "preserved", "empty")
+	if err := os.MkdirAll(originalEmptyDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	snapshot, err := snapshotGeneratorState(root)
 	if err != nil {
 		t.Fatalf("snapshotGeneratorState() error = %v", err)
@@ -117,6 +121,16 @@ func TestGeneratorSnapshotRestoresPermissionsAndAllowsServiceSymlinks(t *testing
 		t.Fatal(err)
 	}
 	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "internal", "service", "preserved")); err != nil {
+		t.Fatal(err)
+	}
+	createdDirectory := filepath.Join(root, "internal", "service", "generated", "nested")
+	if err := os.MkdirAll(createdDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(createdDirectory, "stub.go"), []byte("package nested\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := snapshot.restore(); err != nil {
@@ -128,6 +142,12 @@ func TestGeneratorSnapshotRestoresPermissionsAndAllowsServiceSymlinks(t *testing
 	}
 	if target, err := os.Readlink(link); err != nil || target != external {
 		t.Fatalf("service symlink = %q, %v; want %q", target, err, external)
+	}
+	if _, err := os.Stat(filepath.Join(root, "internal", "service", "generated")); !os.IsNotExist(err) {
+		t.Fatalf("new generator directory remains after rollback: %v", err)
+	}
+	if info, err := os.Stat(originalEmptyDirectory); err != nil || !info.IsDir() {
+		t.Fatalf("original empty directory was not restored: %v, %v", info, err)
 	}
 }
 

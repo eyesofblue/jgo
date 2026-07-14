@@ -99,6 +99,10 @@ func Validate(projectRoot string) error {
 	if len(state.Clients) > 0 && !regularFile(filepath.Join(root, "internal", "rpcclient", "clients.gen.go")) {
 		return errors.New("rpc binding: generated client bindings are missing; run jgo generate")
 	}
+	canonicalizeManifest(&state)
+	if err := validateGeneratedBindingFiles(root, state); err != nil {
+		return err
+	}
 	for _, existing := range append(append([]Binding(nil), state.Servers...), state.Clients...) {
 		resolved, resolveErr := resolve(root, BindConfig{ModuleSpec: moduleSpec(existing), Package: existing.Package, Service: existing.Service})
 		if resolveErr != nil {
@@ -110,6 +114,35 @@ func Validate(projectRoot string) error {
 		}
 	}
 	return validateClientConfiguration(root, state.Clients)
+}
+
+func validateGeneratedBindingFiles(root string, state manifest) error {
+	checks := []struct {
+		enabled  bool
+		path     string
+		expected func() ([]byte, error)
+		kind     string
+	}{
+		{enabled: len(state.Servers) > 0, path: filepath.Join(root, "internal", "transport", "grpc", "external.gen.go"), expected: func() ([]byte, error) { return renderServer(root, state.Servers) }, kind: "server"},
+		{enabled: len(state.Clients) > 0, path: filepath.Join(root, "internal", "rpcclient", "clients.gen.go"), expected: func() ([]byte, error) { return renderClients(root, state.Clients) }, kind: "client"},
+	}
+	for _, check := range checks {
+		if !check.enabled {
+			continue
+		}
+		expected, err := check.expected()
+		if err != nil {
+			return err
+		}
+		actual, err := os.ReadFile(check.path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(actual, expected) {
+			return fmt.Errorf("rpc binding: generated %s bindings differ from the manifest; run jgo generate", check.kind)
+		}
+	}
+	return nil
 }
 
 func validateManifest(state manifest) error {
@@ -503,6 +536,7 @@ func Generate(projectRoot string) (bool, error) {
 	}
 	state.Servers, state.Clients = resolvedServers, resolvedClients
 	assignServerBusinessNames(state.Servers)
+	canonicalizeManifest(&state)
 	if err := validateServerMethodNames(state.Servers); err != nil {
 		return false, err
 	}
@@ -602,6 +636,7 @@ func BindServer(config BindConfig) (Binding, error) {
 			break
 		}
 	}
+	canonicalizeManifest(&state)
 	if err := validateServerMethodNames(state.Servers); err != nil {
 		return Binding{}, err
 	}
@@ -691,6 +726,7 @@ func BindClient(config BindConfig) (Binding, error) {
 	if !replaced {
 		state.Clients = append(state.Clients, binding)
 	}
+	canonicalizeManifest(&state)
 	paths := []string{
 		"go.mod",
 		"go.sum",
@@ -773,6 +809,7 @@ func UnbindServer(projectRoot, service string, packagePaths ...string) error {
 		return fmt.Errorf("rpc server: service %q is not bound", service)
 	}
 	state.Servers = servers
+	canonicalizeManifest(&state)
 	paths := []string{"go.mod", "go.sum", filepath.Join(".jgo", "rpc.json"), filepath.Join("internal", "transport", "grpc", "external.gen.go")}
 	return mutateFiles(root, paths, func() error {
 		if err := writeServer(root, state.Servers); err != nil {
@@ -814,6 +851,7 @@ func UnbindClient(projectRoot, name string) error {
 		return fmt.Errorf("rpc client: name %q is not bound", name)
 	}
 	state.Clients = clients
+	canonicalizeManifest(&state)
 	paths := []string{"go.mod", "go.sum", filepath.Join(".jgo", "rpc.json"), filepath.Join("configs", "local.yaml"), filepath.Join("internal", "rpcclient", "clients.gen.go")}
 	return mutateFiles(root, paths, func() error {
 		if err := writeClients(root, state.Clients); err != nil {
@@ -898,6 +936,10 @@ func restoreFiles(root string, states map[string]fileState) error {
 			continue
 		}
 		if err := os.WriteFile(path, state.contents, state.mode); err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+			continue
+		}
+		if err := os.Chmod(path, state.mode); err != nil {
 			rollbackErrors = append(rollbackErrors, err)
 		}
 	}
@@ -1210,10 +1252,7 @@ func loadManifest(root string) (manifest, error) {
 }
 
 func saveManifest(root string, state manifest) error {
-	sort.Slice(state.Servers, func(i, j int) bool {
-		return state.Servers[i].Package+state.Servers[i].Service < state.Servers[j].Package+state.Servers[j].Service
-	})
-	sort.Slice(state.Clients, func(i, j int) bool { return state.Clients[i].Name < state.Clients[j].Name })
+	canonicalizeManifest(&state)
 	contents, _ := json.MarshalIndent(state, "", "  ")
 	contents = append(contents, '\n')
 	directory := filepath.Join(root, ".jgo")
@@ -1223,17 +1262,40 @@ func saveManifest(root string, state manifest) error {
 	return os.WriteFile(filepath.Join(directory, "rpc.json"), contents, 0o644)
 }
 
+func canonicalizeManifest(state *manifest) {
+	if state == nil {
+		return
+	}
+	sort.Slice(state.Servers, func(i, j int) bool {
+		if state.Servers[i].Package != state.Servers[j].Package {
+			return state.Servers[i].Package < state.Servers[j].Package
+		}
+		return state.Servers[i].Service < state.Servers[j].Service
+	})
+	sort.Slice(state.Clients, func(i, j int) bool { return state.Clients[i].Name < state.Clients[j].Name })
+}
+
 func writeServer(root string, bindings []Binding) error {
+	contents, err := renderServer(root, bindings)
+	if err != nil {
+		return err
+	}
+	return writeGo(filepath.Join(root, "internal", "transport", "grpc", "external.gen.go"), contents)
+}
+
+func renderServer(root string, bindings []Binding) ([]byte, error) {
+	modulePath, err := currentModule(root)
+	if err != nil {
+		return nil, err
+	}
 	if len(bindings) == 0 {
 		// The second parameter must retain the concrete service type expected by
 		// register.go, so generate it from the current module layout.
-		modulePath, _ := currentModule(root)
 		contents := []byte("// Code generated by jgo rpc server bind. DO NOT EDIT.\npackage grpctransport\n\nimport (\n\t\"google.golang.org/grpc\"\n\t\"" + modulePath + "/internal/service\"\n)\n\nfunc registerExternal(grpc.ServiceRegistrar, *service.Service) {}\n")
-		return writeGo(filepath.Join(root, "internal", "transport", "grpc", "external.gen.go"), contents)
+		return format.Source(contents)
 	}
 	var output bytes.Buffer
 	output.WriteString("// Code generated by jgo rpc server bind. DO NOT EDIT.\npackage grpctransport\n\nimport (\n\t\"context\"\n\tstderrors \"errors\"\n\tjgoerrors \"github.com/eyesofblue/jgo/errors\"\n\t\"go.opentelemetry.io/otel/attribute\"\n\t\"go.opentelemetry.io/otel/trace\"\n\t\"google.golang.org/grpc\"\n\t\"")
-	modulePath, _ := currentModule(root)
 	output.WriteString(modulePath + "/internal/service\"\n")
 	packages, aliases := bindingPackages(bindings)
 	for index, packagePath := range packages {
@@ -1255,7 +1317,11 @@ func writeServer(root string, bindings []Binding) error {
 		output.WriteString(fmt.Sprintf("\t%s.Register%sServer(registrar, &%s{application: application})\n", aliases[binding.Package], binding.Service, fmt.Sprintf("%sExternalServer%d", lowerFirst(binding.Service), index)))
 	}
 	output.WriteString("}\n")
-	return writeGo(filepath.Join(root, "internal", "transport", "grpc", "external.gen.go"), output.Bytes())
+	formatted, err := format.Source(output.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("format generated server bindings: %w\n%s", err, output.Bytes())
+	}
+	return formatted, nil
 }
 
 func createServerStubs(root string, binding Binding) error {
@@ -1284,10 +1350,21 @@ func createServerStubs(root string, binding Binding) error {
 }
 
 func writeClients(root string, bindings []Binding) error {
-	modulePath, _ := currentModule(root)
+	contents, err := renderClients(root, bindings)
+	if err != nil {
+		return err
+	}
+	return writeGo(filepath.Join(root, "internal", "rpcclient", "clients.gen.go"), contents)
+}
+
+func renderClients(root string, bindings []Binding) ([]byte, error) {
+	modulePath, err := currentModule(root)
+	if err != nil {
+		return nil, err
+	}
 	if len(bindings) == 0 {
 		contents := []byte("// Code generated by jgo rpc client bind. DO NOT EDIT.\npackage rpcclient\n\nimport (\n\t\"log/slog\"\n\tclientgrpcx \"github.com/eyesofblue/jgo/client/grpcx\"\n\t\"" + modulePath + "/internal/config\"\n)\n\ntype Clients struct{}\n\nfunc New(map[string]config.RPCClient, *slog.Logger) (*clientgrpcx.Manager, *Clients, error) { return nil, &Clients{}, nil }\n")
-		return writeGo(filepath.Join(root, "internal", "rpcclient", "clients.gen.go"), contents)
+		return format.Source(contents)
 	}
 	var output bytes.Buffer
 	output.WriteString("// Code generated by jgo rpc client bind. DO NOT EDIT.\npackage rpcclient\n\nimport (\n\t\"fmt\"\n\t\"log/slog\"\n\n\tclientgrpcx \"github.com/eyesofblue/jgo/client/grpcx\"\n\t\"" + modulePath + "/internal/config\"\n")
@@ -1308,7 +1385,11 @@ func writeClients(root string, bindings []Binding) error {
 		output.WriteString(fmt.Sprintf("\t%sConn, err := manager.Conn(%q)\n\tif err != nil { _ = manager.Stop(nil); return nil, nil, err }\n\tclients.%s = %s.New%sClient(%sConn)\n", binding.Name, binding.Name, exported(binding.Name), aliases[binding.Package], binding.Service, binding.Name))
 	}
 	output.WriteString("\treturn manager, clients, nil\n}\n")
-	return writeGo(filepath.Join(root, "internal", "rpcclient", "clients.gen.go"), output.Bytes())
+	formatted, err := format.Source(output.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("format generated client bindings: %w\n%s", err, output.Bytes())
+	}
+	return formatted, nil
 }
 
 func bindingPackages(bindings []Binding) ([]string, map[string]string) {

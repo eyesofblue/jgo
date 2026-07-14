@@ -2,6 +2,7 @@ package rpcbinding
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -526,6 +527,109 @@ func TestImportPathPunctuationProducesValidBusinessName(t *testing.T) {
 	}
 	if got := binding.Methods[0].Business; got != "CompanyApiV3UserServiceGetUser" {
 		t.Fatalf("business name = %q", got)
+	}
+}
+
+func TestValidateRejectsGeneratedBindingContentDrift(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeMixed, protocol)
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BindClient(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", Name: "user", SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(service); err != nil {
+		t.Fatalf("valid generated bindings rejected: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		path        string
+		old         string
+		replacement string
+		want        string
+	}{
+		{
+			name: "server registration", path: filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"),
+			old:         "pb0.RegisterUserServiceServer(registrar, &userServiceExternalServer0{application: application})",
+			replacement: "_ = registrar",
+			want:        "generated server bindings differ",
+		},
+		{
+			name: "client field", path: filepath.Join(service, "internal", "rpcclient", "clients.gen.go"),
+			old: "User pb0.UserServiceClient", replacement: "User any",
+			want: "generated client bindings differ",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			original := mustReadTestFile(t, test.path)
+			changed := strings.Replace(string(original), test.old, test.replacement, 1)
+			if changed == string(original) {
+				t.Fatalf("test fragment %q not found in %s", test.old, test.path)
+			}
+			if err := os.WriteFile(test.path, []byte(changed), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := Validate(service); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if err := os.WriteFile(test.path, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestReverseOrderBindingsAreImmediatelyDeterministic(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeMixed, protocol)
+	module := "example.com/company-api@v0.1.1"
+	for _, serviceName := range []string{"UserService", "AdminService"} {
+		if _, err := BindServer(BindConfig{Root: service, ModuleSpec: module, Service: serviceName, SkipTidy: true}); err != nil {
+			t.Fatalf("BindServer(%s): %v", serviceName, err)
+		}
+	}
+	for _, name := range []string{"zeta", "alpha"} {
+		if _, err := BindClient(BindConfig{Root: service, ModuleSpec: module, Service: "UserService", Name: name, SkipTidy: true}); err != nil {
+			t.Fatalf("BindClient(%s): %v", name, err)
+		}
+	}
+	serverPath := filepath.Join(service, "internal", "transport", "grpc", "external.gen.go")
+	clientPath := filepath.Join(service, "internal", "rpcclient", "clients.gen.go")
+	serverBefore, clientBefore := mustReadTestFile(t, serverPath), mustReadTestFile(t, clientPath)
+	if changed, err := Generate(service); err != nil || !changed {
+		t.Fatalf("Generate() = %v, %v", changed, err)
+	}
+	assertFileEquals(t, serverPath, serverBefore)
+	assertFileEquals(t, clientPath, clientBefore)
+}
+
+func TestMutateFilesRestoresOriginalPermissions(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "go.mod")
+	if err := os.WriteFile(path, []byte("original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := mutateFiles(root, []string{"go.mod"}, func() error {
+		if err := os.WriteFile(path, []byte("changed\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			return err
+		}
+		return errors.New("injected failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected failure") {
+		t.Fatalf("mutateFiles() error = %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contents := string(mustReadTestFile(t, path)); contents != "original\n" || info.Mode().Perm() != 0o600 {
+		t.Fatalf("restored file = %q mode=%o", contents, info.Mode().Perm())
 	}
 }
 
