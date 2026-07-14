@@ -74,3 +74,20 @@ func TestTracingValidatesConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestTracingHonorsExplicitZeroSampleRatio(t *testing.T) {
+	tracing, err := NewTracing(context.Background(), TracingConfig{
+		ServiceName: "zero-sampling",
+		SampleRatio: 0,
+		Exporter:    OTLPConfig{Enabled: true, Endpoint: "127.0.0.1:4317", Insecure: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tracing.Stop(context.Background())
+	_, span := otel.Tracer("test").Start(context.Background(), "not-sampled")
+	defer span.End()
+	if span.IsRecording() || span.SpanContext().IsSampled() {
+		t.Fatalf("zero sample ratio produced sampled span: %+v", span.SpanContext())
+	}
+}

@@ -137,6 +137,13 @@ jgo rpc client bind UserService \
 
 `--name` 是稳定的配置 key 和代码字段名。地址、超时、TLS、readiness 直接修改 `configs/local.yaml`。重复执行相同 `bind` 是幂等的；同一 package 下可从 `v0.1.0` 更新到 `v0.2.0`，不会覆盖运行配置。
 
+服务端 binding 以 `package + Service` 为唯一身份，因此 `company.user.v1.UserService` 与 `company.user.v2.UserService` 可以同时注册。外部协议业务方法从完整 import path 提取稳定前缀，例如 `company/user/v1.UserService.GetUser` 映射为 `Service.CompanyUserV1UserServiceGetUser`；即使两个版本的 Go package 都命名为 `user` 也不会冲突。若两个不同 import path 规范化后仍同名，后绑定项会增加稳定的 path 摘要。同名 Service 并存时，解绑必须指定 package：
+
+```bash
+jgo rpc server unbind UserService \
+  --package example.com/company-api/gen/pb/company/user/v1
+```
+
 低频永久解除职责或依赖：
 
 ```bash
@@ -232,6 +239,8 @@ return rpcResponse.GetUser(), nil
 
 ## 生产安全
 
+HTTP 请求体默认限制为 4 MiB，可通过 `service.max_body_bytes` 调整。生成的 JSON handler 只接受一个完整 JSON 文档，并在进入业务方法前校验 OpenAPI required、类型、格式和范围约束；超限返回 413，契约不匹配或尾随第二个 JSON 值返回 400。
+
 本地配置显式开启 Reflection，框架默认关闭：
 
 ```yaml
@@ -246,7 +255,7 @@ grpc:
     client_ca_file: ""
 ```
 
-TLS/mTLS 配置缺失、证书无效或文件不可读时服务启动失败，不降级为明文。`internal/securityx/security.go` 是用户拥有的认证/授权接入点；框架定义 `Authenticator`/`Authorizer`，认证失败返回 `Unauthenticated`，授权失败返回 `PermissionDenied`，不绑定 JWT 或私有权限中心。
+TLS/mTLS 配置缺失、证书无效或文件不可读时服务启动失败，不降级为明文。`internal/securityx/security.go` 是用户拥有且同时应用于 HTTP/gRPC 的认证授权接入点；框架定义 `Authenticator`/`Authorizer`。HTTP 认证/授权失败分别返回 401/403，gRPC 返回 `Unauthenticated`/`PermissionDenied`，不绑定 JWT 或私有权限中心。
 
 YAML 使用严格模式，未知字段会阻止启动，例如误写 `timeuot` 不会被忽略。
 
@@ -270,7 +279,7 @@ rpc_client:
     readiness: optional
 ```
 
-下游不可用不会阻止进程启动；required 依赖未就绪时 `/readyz` 返回 503，真实 RPC 调用返回 `Unavailable`，JGO 不自动重试。Readiness 从收集端强制执行超时，并将 checker panic 隔离为 `NOT_READY`；即使第三方 checker 未正确响应 context，也不会阻塞或带崩 `/readyz`。数据库、Redis、MQ 和私有组件可实现同一接口。
+下游不可用不会阻止进程启动；required 依赖未就绪时 `/readyz` 返回 503，真实 RPC 调用返回 `Unavailable`，JGO 不自动重试。进程在 HTTP/gRPC/Management 完成监听前保持 not-ready，并在停机开始时先切回 not-ready。Readiness 从收集端强制执行超时，并将 checker panic 隔离为 `NOT_READY`；即使第三方 checker 未正确响应 context，也不会阻塞或带崩 `/readyz`。数据库、Redis、MQ 和私有组件可实现同一接口。
 
 Prometheus 默认开启；OTLP Metrics 默认关闭：
 

@@ -1,7 +1,9 @@
 package command
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +19,12 @@ import (
 	rpcbindinggen "github.com/eyesofblue/jgo/internal/generator/rpcbinding"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/modfile"
+)
+
+var (
+	generateHTTP        = openapigen.Generate
+	generateProtobuf    = protobufgen.GenerateWithResult
+	generateRPCBindings = rpcbindinggen.Generate
 )
 
 const jgoModulePath = "github.com/eyesofblue/jgo"
@@ -53,42 +61,240 @@ func newGenerateCommand(stdout io.Writer) *cobra.Command {
 					return err
 				}
 			}
-			if project.hasWeb {
-				if err := openapigen.Generate(project.root); err != nil {
-					return err
-				}
-				_, _ = fmt.Fprintln(stdout, "generated HTTP code")
-			}
-			if project.hasGRPC {
-				result, err := protobufgen.GenerateWithResult(project.root)
-				if err != nil {
-					return err
-				}
-				if err := printCreatedServiceStubs(stdout, result); err != nil {
-					return err
-				}
-				if result.Empty {
-					_, _ = fmt.Fprintln(stdout, "no local protobuf contracts; nothing to generate")
-				} else if result.ProtocolOnly {
-					_, _ = fmt.Fprintln(stdout, "generated shared protobuf and gRPC Go packages; run go test ./...")
-				} else {
-					_, _ = fmt.Fprintln(stdout, "generated protobuf and gRPC code; run go test ./...")
-				}
-			}
-			if project.hasServer {
-				reconciled, err := rpcbindinggen.Generate(project.root)
-				if err != nil {
-					return err
-				}
-				if reconciled {
-					_, _ = fmt.Fprintln(stdout, "reconciled external RPC bindings")
-				}
-			}
-			return nil
+			return runProjectGenerators(project, stdout)
 		},
 	}
 	command.Flags().StringVar(&root, "root", ".", "JGO project root")
 	return command
+}
+
+func runProjectGenerators(project projectInfo, stdout io.Writer) (err error) {
+	snapshot, err := snapshotGeneratorState(project.root)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if restoreErr := snapshot.restore(); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("generate: rollback: %w", restoreErr))
+		}
+	}()
+
+	var output bytes.Buffer
+	if project.hasWeb {
+		if err := generateHTTP(project.root); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(&output, "generated HTTP code")
+	}
+	if project.hasGRPC {
+		result, err := generateProtobuf(project.root)
+		if err != nil {
+			return err
+		}
+		if err := printCreatedServiceStubs(&output, result); err != nil {
+			return err
+		}
+		if result.Empty {
+			_, _ = fmt.Fprintln(&output, "no local protobuf contracts; nothing to generate")
+		} else if result.ProtocolOnly {
+			_, _ = fmt.Fprintln(&output, "generated shared protobuf and gRPC Go packages; run go test ./...")
+		} else {
+			_, _ = fmt.Fprintln(&output, "generated protobuf and gRPC code; run go test ./...")
+		}
+	}
+	if project.hasServer {
+		reconciled, err := generateRPCBindings(project.root)
+		if err != nil {
+			return err
+		}
+		if reconciled {
+			_, _ = fmt.Fprintln(&output, "reconciled external RPC bindings")
+		}
+	}
+	if _, err := io.Copy(stdout, &output); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+type generatorFile struct {
+	contents []byte
+	mode     os.FileMode
+}
+
+type generatorSnapshot struct {
+	root    string
+	paths   []string
+	existed map[string]bool
+	files   map[string]generatorFile
+	links   map[string]string
+}
+
+func snapshotGeneratorState(root string) (generatorSnapshot, error) {
+	paths := []string{
+		"go.mod", "go.sum", filepath.FromSlash("api/http/openapi.yaml"),
+		filepath.FromSlash("gen/http"), filepath.FromSlash("gen/pb"),
+		filepath.FromSlash("internal/service"), filepath.FromSlash(".jgo/rpc.json"),
+		filepath.FromSlash("internal/transport/http/routes.gen.go"),
+		filepath.FromSlash("internal/transport/grpc/register.gen.go"),
+		filepath.FromSlash("internal/transport/grpc/external.gen.go"),
+		filepath.FromSlash("internal/rpcclient/clients.gen.go"),
+	}
+	snapshot := generatorSnapshot{root: root, paths: paths, existed: make(map[string]bool), files: make(map[string]generatorFile), links: make(map[string]string)}
+	for _, relative := range paths {
+		path := filepath.Join(root, relative)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return generatorSnapshot{}, fmt.Errorf("generate: snapshot %s: %w", relative, err)
+		}
+		snapshot.existed[relative] = true
+		if info.Mode()&os.ModeSymlink != 0 {
+			return generatorSnapshot{}, fmt.Errorf("generate: refuse symlink snapshot path %s", relative)
+		}
+		if info.Mode().IsRegular() {
+			if err := snapshot.capture(relative, path, info); err != nil {
+				return generatorSnapshot{}, err
+			}
+			continue
+		}
+		if !info.IsDir() {
+			return generatorSnapshot{}, fmt.Errorf("generate: snapshot path %s is not a regular file or directory", relative)
+		}
+		if err := filepath.WalkDir(path, func(current string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				fileRelative, err := filepath.Rel(root, current)
+				if err != nil {
+					return err
+				}
+				if !pathWithin(fileRelative, filepath.FromSlash("internal/service")) {
+					return fmt.Errorf("generate: refuse symlink snapshot path %s", current)
+				}
+				target, err := os.Readlink(current)
+				if err != nil {
+					return err
+				}
+				snapshot.links[filepath.Clean(fileRelative)] = target
+				return nil
+			}
+			if !entry.Type().IsRegular() {
+				return nil
+			}
+			fileInfo, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			fileRelative, err := filepath.Rel(root, current)
+			if err != nil {
+				return err
+			}
+			return snapshot.capture(fileRelative, current, fileInfo)
+		}); err != nil {
+			return generatorSnapshot{}, err
+		}
+	}
+	return snapshot, nil
+}
+
+func pathWithin(path, directory string) bool {
+	relative, err := filepath.Rel(directory, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func (snapshot generatorSnapshot) capture(relative, path string, info os.FileInfo) error {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("generate: snapshot %s: %w", relative, err)
+	}
+	snapshot.files[filepath.Clean(relative)] = generatorFile{contents: contents, mode: info.Mode().Perm()}
+	return nil
+}
+
+func (snapshot generatorSnapshot) restore() error {
+	var restoreErrors []error
+	for _, relative := range snapshot.paths {
+		path := filepath.Join(snapshot.root, relative)
+		if !snapshot.existed[relative] {
+			if err := os.RemoveAll(path); err != nil {
+				restoreErrors = append(restoreErrors, err)
+			}
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil && !os.IsNotExist(err) {
+			restoreErrors = append(restoreErrors, err)
+			continue
+		}
+		if err == nil && info.IsDir() {
+			if walkErr := filepath.WalkDir(path, func(current string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil || entry.IsDir() {
+					return walkErr
+				}
+				fileRelative, relErr := filepath.Rel(snapshot.root, current)
+				if relErr != nil {
+					return relErr
+				}
+				_, fileExisted := snapshot.files[filepath.Clean(fileRelative)]
+				_, linkExisted := snapshot.links[filepath.Clean(fileRelative)]
+				if !fileExisted && !linkExisted {
+					if removeErr := os.Remove(current); removeErr != nil {
+						return removeErr
+					}
+				}
+				return nil
+			}); walkErr != nil {
+				restoreErrors = append(restoreErrors, walkErr)
+			}
+		} else if err == nil {
+			if _, existed := snapshot.files[filepath.Clean(relative)]; !existed {
+				if removeErr := os.Remove(path); removeErr != nil {
+					restoreErrors = append(restoreErrors, removeErr)
+				}
+			}
+		}
+	}
+	for relative, file := range snapshot.files {
+		path := filepath.Join(snapshot.root, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			restoreErrors = append(restoreErrors, err)
+			continue
+		}
+		if err := os.WriteFile(path, file.contents, file.mode); err != nil {
+			restoreErrors = append(restoreErrors, err)
+			continue
+		}
+		if err := os.Chmod(path, file.mode); err != nil {
+			restoreErrors = append(restoreErrors, err)
+		}
+	}
+	for relative, target := range snapshot.links {
+		path := filepath.Join(snapshot.root, relative)
+		if current, err := os.Readlink(path); err == nil && current == target {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			restoreErrors = append(restoreErrors, err)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			restoreErrors = append(restoreErrors, err)
+			continue
+		}
+		if err := os.Symlink(target, path); err != nil {
+			restoreErrors = append(restoreErrors, err)
+		}
+	}
+	return errors.Join(restoreErrors...)
 }
 
 func newDoctorCommand(stdout io.Writer) *cobra.Command {

@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -31,6 +32,7 @@ type App struct {
 	components      []Component
 	componentNames  map[string]struct{}
 	state           state
+	ready           atomic.Bool
 }
 
 // New creates an application with safe default settings.
@@ -106,6 +108,8 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	results := make(chan startResult, len(components))
+	started := make(chan struct{}, len(components))
+	startupCount := 0
 	var starts sync.WaitGroup
 	starts.Add(len(components))
 	for _, component := range components {
@@ -117,9 +121,34 @@ func (a *App) Run(ctx context.Context) error {
 				err:       startComponent(signalCtx, component),
 			}
 		}()
+		if notifier, ok := component.(StartupNotifier); ok && notifier.Started() != nil {
+			startupCount++
+			startup := notifier.Started()
+			go func() {
+				select {
+				case <-startup:
+					started <- struct{}{}
+				case <-signalCtx.Done():
+				}
+			}()
+		}
 	}
 
 	var runErr error
+	for startupCount > 0 {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				runErr = &ComponentError{Op: "start", Name: result.component.Name(), Err: result.err}
+			}
+			goto shutdown
+		case <-started:
+			startupCount--
+		case <-signalCtx.Done():
+			goto shutdown
+		}
+	}
+	a.ready.Store(true)
 	select {
 	case result := <-results:
 		if result.err != nil {
@@ -129,11 +158,22 @@ func (a *App) Run(ctx context.Context) error {
 		// Parent cancellation and process signals are normal shutdown paths.
 	}
 
+shutdown:
+	a.ready.Store(false)
 	cancelRun()
 	stopSignals()
 
 	shutdownErr := stopAll(components, timeout, &starts)
 	return errors.Join(runErr, shutdownErr)
+}
+
+// CheckReadiness reports whether every startup-aware component has crossed
+// its startup boundary and shutdown has not begun.
+func (a *App) CheckReadiness(context.Context) error {
+	if a == nil || !a.ready.Load() {
+		return ErrNotReady
+	}
+	return nil
 }
 
 func (a *App) beginRun() ([]Component, time.Duration, error) {

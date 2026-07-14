@@ -36,7 +36,7 @@
 
 ### 0.4 绑定生命周期
 
-- bind 粒度是整个 protobuf Service，业务调用粒度仍是 Method。
+- bind 粒度是整个 protobuf Service，服务端 binding 以 `package + Service` 为唯一键，同名 v1/v2 可以并存；业务调用粒度仍是 Method。
 - 重复 bind 幂等更新同一 package 的 module 版本，并保留客户端地址、超时、TLS、readiness 配置。
 - unbind 用于低频、永久取消服务职责或客户端依赖；不修改公共协议，不删除用户业务实现。
 - unbind 后执行 tidy 与编译检查，失败回滚。单个 Method 下线通过协议 deprecated/新版本治理，不增加 method unbind。
@@ -51,7 +51,7 @@
 ### 0.6 Management、Readiness 与 Metrics
 
 - 所有服务新增独立 Management HTTP Server，默认 `:9091`。
-- `/healthz` 只表示当前进程；`/readyz` 聚合 required/optional 依赖；`/metrics` 暴露 Prometheus。
+- `/healthz` 只表示当前进程；`/readyz` 聚合进程启动/停机门与 required/optional 依赖；`/metrics` 暴露 Prometheus。
 - RPC 客户端默认 required readiness；可将非关键依赖显式放宽为 optional。required 依赖不可用时进程仍运行但 readyz 返回 503；registry 收集端强制超时，并把第三方 checker panic 隔离为 NOT_READY，不依赖 checker 正确响应 context 才能安全返回。
 - readiness 是通用注册表，后续数据库、Redis、MQ、服务发现和私有组件实现相同接口。
 - Metrics 提供 HTTP/gRPC RED、Go runtime 与有限业务码；HTTP timeout/panic 和 gRPC 最终映射状态、认证/授权失败均纳入统计；Prometheus 默认本地开启，OTLP Metrics 默认关闭且可同时启用。
@@ -73,7 +73,9 @@
 - 项目名以数字开头、protobuf package 是 Go 关键字等情况会生成合法的 protobuf/Go package；无法安全推导时直接报错。
 - Service/RPC 组合产生相同业务方法名或相同 service 文件名时，在写文件前拒绝生成，不以覆盖顺序决定结果。
 - `.jgo/rpc.json` 严格拒绝未知字段、重复 binding、客户端 Go 字段碰撞和不适用于当前项目类型的 server binding。
+- 外部服务端业务方法统一使用 `<PackagePath><Service><Method>`，映射固化在 manifest；即使不同版本使用相同 Go package 名也不会冲突，规范化碰撞时增加稳定 path 摘要，同名 Service 并存时 unbind 必须指定 package。
 - bind/unbind 先生成再编译，失败恢复 manifest、go.mod/go.sum、配置和所有 JGO 管理文件；用户业务实现始终不被删除。
+- OpenAPI 三个 managed 输出事务式提交；生成 handler 在业务调用前执行 OpenAPI request validation。
 - Readiness 收集端执行硬超时并隔离 checker panic；返回给 `/readyz` 的错误不会包含 panic 值或堆栈。
 - Management、HTTP 和 gRPC 组件均禁止重复启动；注册或启动异常必须能够进入有界关闭流程。
 
@@ -88,7 +90,7 @@ JGO 是一个可独立使用的 Go 服务框架和脚手架，用于快速创建
 3. RPC Server 统一使用 gRPC + protobuf。
 4. 通过命令创建项目、添加接口、生成代码、运行服务和调试接口。
 5. 保留接入私有配置中心、注册中心、日志、监控和 Tracing 等基础设施的扩展能力。
-6. 所有生成操作应可重复执行，不覆盖业务实现，失败时不留下半成品。
+6. 所有生成操作应可重复执行，不覆盖业务实现，失败时不留下半成品；统一 `jgo generate` 以一次跨 HTTP、protobuf 和 RPC binding 的事务提交。
 
 ### 1.1 Go 版本策略
 

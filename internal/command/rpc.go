@@ -40,8 +40,15 @@ func newRPCServerBindCommand(stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(stdout, "bound RPC server %s from %s; implement generated Service methods\n", binding.Service, binding.Package)
-			return err
+			if _, err = fmt.Fprintf(stdout, "bound RPC server %s from %s\n", binding.Service, binding.Package); err != nil {
+				return err
+			}
+			for _, method := range binding.Methods {
+				if _, err = fmt.Fprintf(stdout, "implement Service.%s\n", method.Business); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 	flags := command.Flags()
@@ -53,11 +60,11 @@ func newRPCServerBindCommand(stdout io.Writer) *cobra.Command {
 }
 
 func newRPCServerUnbindCommand(stdout io.Writer) *cobra.Command {
-	var root string
+	var root, packagePath string
 	command := &cobra.Command{
 		Use: "unbind <service-name>", Short: "Permanently remove a shared Service binding from this server", Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := rpcbindinggen.UnbindServer(root, args[0]); err != nil {
+			if err := rpcbindinggen.UnbindServer(root, args[0], packagePath); err != nil {
 				return err
 			}
 			_, err := fmt.Fprintf(stdout, "unbound RPC server %s; user-owned business implementations were kept\n", args[0])
@@ -65,6 +72,7 @@ func newRPCServerUnbindCommand(stdout io.Writer) *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&root, "root", ".", "JGO service project root")
+	command.Flags().StringVar(&packagePath, "package", "", "exact generated Go package when same-named Services are bound")
 	return command
 }
 

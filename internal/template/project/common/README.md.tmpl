@@ -20,11 +20,13 @@ Operational endpoints use the dedicated management listener (`:9091` locally):
 
 ```text
 GET /healthz  process liveness only
-GET /readyz   required dependency readiness
+GET /readyz   process lifecycle and required dependency readiness
 GET /metrics  Prometheus metrics
 ```
 
 Local gRPC Reflection is enabled in `configs/local.yaml`; the framework default is disabled. Server TLS/mTLS, OTLP tracing/metrics, client readiness and RPC client TLS are configuration-driven. YAML decoding is strict.
+
+HTTP request bodies default to a 4 MiB limit through `service.max_body_bytes`; generated handlers reject trailing JSON documents and validate OpenAPI request constraints before business code runs.
 {{if .HasWeb}}
 
 ## HTTP APIs
@@ -70,12 +72,12 @@ jgo rpc server bind UserService --module example.com/company-api@v0.1.0
 jgo rpc client bind UserService --module example.com/company-api@v0.1.0 --name user
 ```
 
-For an unpublished module present in the active `go.work`, omit `@version`. An explicit version resolves released source or a matching `go.mod replace`, never unpublished workspace source. Repeating `bind` updates a compatible module version. `unbind` permanently removes a project role/dependency; it does not edit the shared protocol.
+For an unpublished module present in the active `go.work`, omit `@version`. An explicit version resolves released source or a matching `go.mod replace`, never unpublished workspace source. Server bindings use `package + Service`, so same-named v1/v2 Services may coexist; their business methods include a stable prefix derived from the complete import path, even when both versions use the same Go package name. Normalized path collisions receive a stable digest suffix. Use `rpc server unbind <Service> --package <generated-package>` when the name is ambiguous. Repeating `bind` updates a compatible module version. `unbind` permanently removes a project role/dependency; it does not edit the shared protocol.
 {{end}}
 
 ## Errors, logs and security
 
-Declare business codes in `internal/errcode/catalog.go`; the catalog rejects duplicate codes/names and owns RPC-code-to-HTTP-status mapping. Add authentication and authorization adapters in the user-owned `internal/securityx/security.go` hook.
+Declare business codes in `internal/errcode/catalog.go`; the catalog rejects duplicate codes/names and owns RPC-code-to-HTTP-status mapping. Add authentication and authorization adapters in the user-owned `internal/securityx/security.go` hook; generated web and gRPC entrypoints both apply it.
 
 Use context-aware structured logs:
 

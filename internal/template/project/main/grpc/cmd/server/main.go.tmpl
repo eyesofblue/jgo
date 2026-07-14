@@ -61,7 +61,7 @@ func run(arguments []string) error {
 			return err
 		}
 	}
-	managementServer, serviceMetrics, err := managementx.New(context.Background(), configuration, rpcManager, logger)
+	managementServer, serviceMetrics, err := managementx.New(context.Background(), configuration, application, rpcManager, logger)
 	if err != nil { return err }
 	if err := application.Add(serviceMetrics); err != nil { return err }
 	if err := application.Add(managementServer); err != nil { return err }

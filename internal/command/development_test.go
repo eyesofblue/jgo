@@ -2,6 +2,7 @@ package command
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	projectgen "github.com/eyesofblue/jgo/internal/generator/project"
+	protobufgen "github.com/eyesofblue/jgo/internal/generator/protobuf"
 )
 
 func TestDoctorPassesForGeneratedWebProject(t *testing.T) {
@@ -54,6 +56,78 @@ func TestGenerateCommandDetectsWebContract(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
 			t.Fatalf("generated %s: %v", relative, err)
 		}
+	}
+}
+
+func TestUnifiedGenerateRollsBackEarlierGenerators(t *testing.T) {
+	root := generatedWebProject(t)
+	contractPath := filepath.Join(root, filepath.FromSlash("api/http/openapi.yaml"))
+	before, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalHTTP, originalProtobuf := generateHTTP, generateProtobuf
+	t.Cleanup(func() { generateHTTP, generateProtobuf = originalHTTP, originalProtobuf })
+	generateHTTP = func(string) error {
+		return os.WriteFile(contractPath, []byte("changed by HTTP generator\n"), 0o644)
+	}
+	createdStub := filepath.Join(root, "internal", "service", "created_before_failure.go")
+	generateProtobuf = func(string) (protobufgen.GenerateResult, error) {
+		if err := os.WriteFile(createdStub, []byte("package service\n"), 0o644); err != nil {
+			return protobufgen.GenerateResult{}, err
+		}
+		return protobufgen.GenerateResult{}, errors.New("protobuf failed")
+	}
+	var output bytes.Buffer
+	err = runProjectGenerators(projectInfo{root: root, hasWeb: true, hasGRPC: true}, &output)
+	if err == nil || !strings.Contains(err.Error(), "protobuf failed") {
+		t.Fatalf("runProjectGenerators() error = %v", err)
+	}
+	after, readErr := os.ReadFile(contractPath)
+	if readErr != nil || !bytes.Equal(after, before) {
+		t.Fatalf("HTTP contract was not rolled back: error=%v\n%s", readErr, after)
+	}
+	if _, statErr := os.Stat(createdStub); !os.IsNotExist(statErr) {
+		t.Fatalf("later generator output remains after rollback: %v", statErr)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("rolled-back success output was printed: %q", output.String())
+	}
+}
+
+func TestGeneratorSnapshotRestoresPermissionsAndAllowsServiceSymlinks(t *testing.T) {
+	root := generatedWebProject(t)
+	contract := filepath.Join(root, filepath.FromSlash("api/http/openapi.yaml"))
+	if err := os.Chmod(contract, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "shared.go")
+	if err := os.WriteFile(external, []byte("package service\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "internal", "service", "shared.go")
+	if err := os.Symlink(external, link); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := snapshotGeneratorState(root)
+	if err != nil {
+		t.Fatalf("snapshotGeneratorState() error = %v", err)
+	}
+	if err := os.Chmod(contract, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshot.restore(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(contract)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("contract mode = %v, %v; want 0600", info, err)
+	}
+	if target, err := os.Readlink(link); err != nil || target != external {
+		t.Fatalf("service symlink = %q, %v; want %q", target, err, external)
 	}
 }
 

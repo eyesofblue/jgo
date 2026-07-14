@@ -7,11 +7,13 @@ import (
 	"os"
 
 	"github.com/eyesofblue/jgo/app"
+	securitymw "github.com/eyesofblue/jgo/middleware/security"
 	"github.com/eyesofblue/jgo/server/httpx"
 	"github.com/eyesofblue/jgo/telemetry"
 	"{{.Module}}/internal/config"
 	"{{.Module}}/internal/managementx"
 	"{{.Module}}/internal/rpcclient"
+	"{{.Module}}/internal/securityx"
 	"{{.Module}}/internal/service"
 	httptransport "{{.Module}}/internal/transport/http"
 )
@@ -60,15 +62,18 @@ func run(arguments []string) error {
 			return err
 		}
 	}
-	managementServer, serviceMetrics, err := managementx.New(context.Background(), configuration, rpcManager, logger)
+	managementServer, serviceMetrics, err := managementx.New(context.Background(), configuration, application, rpcManager, logger)
 	if err != nil { return err }
 	if err := application.Add(serviceMetrics); err != nil { return err }
 	if err := application.Add(managementServer); err != nil { return err }
 	applicationService := service.New(rpcClients)
+	authenticator, authorizer, err := securityx.New(configuration)
+	if err != nil { return err }
 	httpServer, err := httpx.New(
 		httpx.WithAddress(configuration.Service.HTTPAddress),
+		httpx.WithMaxBodyBytes(configuration.Service.MaxBodyBytes),
 		httpx.WithLogger(logger),
-		httpx.WithHandler(httptransport.NewHandler(applicationService)),
+		httpx.WithHandler(httptransport.NewHandler(applicationService, securitymw.New(authenticator, authorizer))),
 		httpx.WithOuterMiddleware(serviceMetrics.HTTPMiddleware),
 	)
 	if err != nil {

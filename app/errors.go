@@ -15,6 +15,7 @@ var (
 	ErrAppStarted         = errors.New("app: application has already started")
 	ErrAlreadyRun         = errors.New("app: application can only run once")
 	ErrShutdownTimeout    = errors.New("app: shutdown timed out")
+	ErrNotReady           = errors.New("app: process is not ready")
 )
 
 // ComponentError identifies the component and lifecycle operation that failed.

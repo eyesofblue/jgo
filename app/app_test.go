@@ -32,7 +32,8 @@ func newTestComponent(name string) *testComponent {
 	}
 }
 
-func (c *testComponent) Name() string { return c.name }
+func (c *testComponent) Name() string             { return c.name }
+func (c *testComponent) Started() <-chan struct{} { return c.started }
 
 func (c *testComponent) Start(ctx context.Context) error {
 	c.startOnce.Do(func() { close(c.started) })
@@ -256,6 +257,55 @@ func TestAppCanOnlyRunOnceAndCannotBeModifiedWhileRunning(t *testing.T) {
 	}
 	if err := a.Run(context.Background()); !errors.Is(err, ErrAlreadyRun) {
 		t.Fatalf("second Run() error = %v, want ErrAlreadyRun", err)
+	}
+}
+
+type delayedStartupComponent struct {
+	release chan struct{}
+	started chan struct{}
+	once    sync.Once
+}
+
+func (c *delayedStartupComponent) Name() string             { return "delayed" }
+func (c *delayedStartupComponent) Started() <-chan struct{} { return c.started }
+func (c *delayedStartupComponent) Start(ctx context.Context) error {
+	select {
+	case <-c.release:
+		c.once.Do(func() { close(c.started) })
+	case <-ctx.Done():
+		return nil
+	}
+	<-ctx.Done()
+	return nil
+}
+func (c *delayedStartupComponent) Stop(context.Context) error { return nil }
+
+func TestProcessReadinessTracksStartupAndShutdown(t *testing.T) {
+	component := &delayedStartupComponent{release: make(chan struct{}), started: make(chan struct{})}
+	a := New(WithShutdownTimeout(time.Second))
+	if err := a.Add(component); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	if err := a.CheckReadiness(context.Background()); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("readiness before startup = %v", err)
+	}
+	close(component.release)
+	deadline := time.Now().Add(time.Second)
+	for a.CheckReadiness(context.Background()) != nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if err := a.CheckReadiness(context.Background()); err != nil {
+		t.Fatalf("readiness after startup = %v", err)
+	}
+	cancel()
+	if err := waitError(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CheckReadiness(context.Background()); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("readiness after shutdown = %v", err)
 	}
 }
 

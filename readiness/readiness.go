@@ -31,7 +31,32 @@ type entry struct {
 	name     string
 	required bool
 	checker  Checker
+	state    *checkState
 }
+
+type checkState struct {
+	mu      sync.Mutex
+	running bool
+}
+
+var errCheckInProgress = fmt.Errorf("readiness: previous dependency check is still running")
+
+func (item entry) begin() bool {
+	item.state.mu.Lock()
+	defer item.state.mu.Unlock()
+	if item.state.running {
+		return false
+	}
+	item.state.running = true
+	return true
+}
+
+func (item entry) finish() {
+	item.state.mu.Lock()
+	item.state.running = false
+	item.state.mu.Unlock()
+}
+
 type Registry struct {
 	mu      sync.RWMutex
 	timeout time.Duration
@@ -58,7 +83,7 @@ func (registry *Registry) Add(name string, required bool, checker Checker) error
 	if _, exists := registry.entries[name]; exists {
 		return fmt.Errorf("readiness: dependency %q is already registered", name)
 	}
-	registry.entries[name] = entry{name: name, required: required, checker: checker}
+	registry.entries[name] = entry{name: name, required: required, checker: checker, state: &checkState{}}
 	return nil
 }
 
@@ -85,7 +110,12 @@ func (registry *Registry) Check(ctx context.Context) Report {
 	pending := make(map[string]entry, len(entries))
 	for _, item := range entries {
 		pending[item.name] = item
+		if !item.begin() {
+			results <- result{entry: item, err: errCheckInProgress}
+			continue
+		}
 		go func(item entry) {
+			defer item.finish()
 			results <- result{entry: item, err: checkDependency(checkCtx, item)}
 		}(item)
 	}

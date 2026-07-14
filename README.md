@@ -112,6 +112,8 @@ jgo rpc client bind UserService \
 
 `--name` is the stable client config/code identifier. Address, timeout, TLS, and readiness remain editable in YAML. Repeating `bind` is idempotent and updates compatible module versions without overwriting runtime configuration.
 
+Server bindings are identified by `package + Service`, so `company.user.v1.UserService` and `company.user.v2.UserService` can run together. External server business methods derive a stable prefix from the complete import path; for example, `company/user/v1.UserService.GetUser` maps to `Service.CompanyUserV1UserServiceGetUser`. Two versions can therefore coexist even when both Go packages are explicitly named `user`; a stable path digest disambiguates the rare case where different paths normalize to the same prefix. When same-named Services coexist, unbind one precisely with `--package`.
+
 Permanent role/dependency cleanup is Service-grained:
 
 ```bash
@@ -192,6 +194,8 @@ return rpcResponse.GetUser(), nil
 
 ## Production safety
 
+HTTP request bodies are limited to 4 MiB by default and can be adjusted with `service.max_body_bytes`. Generated JSON handlers accept exactly one JSON document and validate OpenAPI required, type, format, and range constraints before business code runs; oversized bodies return 413 and contract violations return 400.
+
 The framework default for gRPC Reflection is off; `configs/local.yaml` explicitly enables it for local debugging. Server TLS/mTLS is configuration-driven:
 
 ```yaml
@@ -206,7 +210,7 @@ grpc:
     client_ca_file: ""
 ```
 
-Invalid certificates or incomplete TLS/mTLS configuration fail startup and never downgrade to plaintext. `internal/securityx/security.go` is the user-owned integration hook for JGO's infrastructure-neutral `Authenticator` and `Authorizer`. Authentication failures return `Unauthenticated`; authorization failures return `PermissionDenied`.
+Invalid certificates or incomplete TLS/mTLS configuration fail startup and never downgrade to plaintext. `internal/securityx/security.go` is the user-owned HTTP/gRPC integration hook for JGO's infrastructure-neutral `Authenticator` and `Authorizer`. HTTP authentication/authorization failures return 401/403; gRPC returns `Unauthenticated`/`PermissionDenied`.
 
 YAML decoding is strict: unknown fields fail startup instead of silently using defaults.
 
@@ -230,7 +234,7 @@ rpc_client:
     readiness: optional
 ```
 
-Unavailable dependencies do not prevent process startup. A required dependency makes `/readyz` return 503; the real RPC returns `Unavailable`, and JGO performs no automatic retry. The registry enforces its deadline at collection time and isolates checker panics as `NOT_READY`, so a third-party checker cannot hang or crash `/readyz`. Database, Redis, MQ, and private components can implement the same interface.
+Unavailable dependencies do not prevent process startup. A required dependency makes `/readyz` return 503; the real RPC returns `Unavailable`, and JGO performs no automatic retry. The process remains not-ready until HTTP, gRPC, and Management listeners are bound, and returns to not-ready before shutdown draining begins. The registry enforces its deadline at collection time and isolates checker panics as `NOT_READY`, so a third-party checker cannot hang or crash `/readyz`. Database, Redis, MQ, and private components can implement the same interface.
 
 Prometheus is enabled locally; OTLP Metrics is optional and may run simultaneously:
 

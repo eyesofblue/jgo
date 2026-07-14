@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestProbe(t *testing.T) {
@@ -32,6 +33,25 @@ func TestProbe(t *testing.T) {
 
 	probe.SetReady(false)
 	assertStatus(t, mux, "/readyz", http.StatusServiceUnavailable)
+}
+
+func TestReadinessHasHardTimeoutAndIsolatesPanics(t *testing.T) {
+	blocked := make(chan struct{})
+	probe := NewWithTimeout(20*time.Millisecond,
+		func(context.Context) error { <-blocked; return nil },
+		func(context.Context) error { panic("secret panic value") },
+	)
+	probe.SetReady(true)
+	started := time.Now()
+	recorder := httptest.NewRecorder()
+	probe.Readiness(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("readiness exceeded hard timeout: %s", elapsed)
+	}
+	close(blocked)
 }
 
 func TestRegisterRejectsNilMux(t *testing.T) {

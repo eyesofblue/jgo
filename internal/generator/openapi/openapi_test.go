@@ -1,6 +1,9 @@
 package openapi
 
 import (
+	"bytes"
+	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -180,12 +183,16 @@ func writeHTTPIntegrationTest(t *testing.T, root string) {
 	contents := `package httptransport
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/eyesofblue/jgo/middleware/bodylimit"
+	securitymw "github.com/eyesofblue/jgo/middleware/security"
+	coresecurity "github.com/eyesofblue/jgo/security"
 	"example.com/demo/internal/service"
 )
 
@@ -193,6 +200,11 @@ type envelope struct {
 	Code int ` + "`json:\"code\"`" + `
 	Msg string ` + "`json:\"msg\"`" + `
 	Data json.RawMessage ` + "`json:\"data\"`" + `
+}
+
+type testAuthenticator struct{}
+func (testAuthenticator) Authenticate(context.Context, coresecurity.Credential) (coresecurity.Principal, error) {
+	return coresecurity.Principal{Subject: "test"}, nil
 }
 
 func TestGeneratedRoutes(t *testing.T) {
@@ -207,12 +219,38 @@ func TestGeneratedRoutes(t *testing.T) {
 	assertEnvelope(t, missing, http.StatusBadRequest, 10001, ` + "`\"data\":null`" + `)
 
 	update := httptest.NewRecorder()
-	handler.ServeHTTP(update, httptest.NewRequest(http.MethodPost, "/update_user", strings.NewReader(` + "`{\"uid\":7,\"nickname\":\"Alice\",\"address\":{\"city\":\"Shanghai\"}}`" + `)))
+	updateRequest := httptest.NewRequest(http.MethodPost, "/update_user", strings.NewReader(` + "`{\"uid\":7,\"nickname\":\"Alice\",\"address\":{\"city\":\"Shanghai\"}}`" + `))
+	updateRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(update, updateRequest)
 	assertEnvelope(t, update, http.StatusOK, 0, ` + "`\"city\":\"Shanghai\"`" + `)
+
+	missingBodyField := httptest.NewRecorder()
+	missingBodyRequest := httptest.NewRequest(http.MethodPost, "/update_user", strings.NewReader(` + "`{}`" + `))
+	missingBodyRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(missingBodyField, missingBodyRequest)
+	assertEnvelope(t, missingBodyField, http.StatusBadRequest, 10001, ` + "`\"data\":null`" + `)
+
+	trailing := httptest.NewRecorder()
+	trailingRequest := httptest.NewRequest(http.MethodPost, "/update_user", strings.NewReader(` + "`{\"uid\":7}{\"uid\":8}`" + `))
+	trailingRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(trailing, trailingRequest)
+	assertEnvelope(t, trailing, http.StatusBadRequest, 10001, ` + "`\"data\":null`" + `)
 
 	list := httptest.NewRecorder()
 	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/list_users", nil))
 	assertEnvelope(t, list, http.StatusOK, 0, ` + "`\"data\":[`" + `)
+
+	unauthenticated := httptest.NewRecorder()
+	secured := NewHandler(service.New(nil), securitymw.New(testAuthenticator{}, nil))
+	secured.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/get_user", nil))
+	assertEnvelope(t, unauthenticated, http.StatusUnauthorized, 10001, ` + "`\"data\":null`" + `)
+
+	oversized := httptest.NewRecorder()
+	limited := bodylimit.New(16)(NewHandler(service.New(nil)))
+	oversizedRequest := httptest.NewRequest(http.MethodPost, "/update_user", strings.NewReader(` + "`{\"uid\":7,\"nickname\":\"this is too large\"}`" + `))
+	oversizedRequest.Header.Set("Content-Type", "application/json")
+	limited.ServeHTTP(oversized, oversizedRequest)
+	assertEnvelope(t, oversized, http.StatusRequestEntityTooLarge, 10001, ` + "`request body too large`" + `)
 }
 
 func assertEnvelope(t *testing.T, recorder *httptest.ResponseRecorder, status, code int, fragment string) {
@@ -235,12 +273,79 @@ func assertEnvelope(t *testing.T, recorder *httptest.ResponseRecorder, status, c
 	}
 }
 
+func TestCommitGeneratedOutputsRollsBackEarlierWrites(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first.go")
+	second := filepath.Join(root, "second.go")
+	if err := os.WriteFile(first, []byte("original first"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("original second"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writes := 0
+	err := commitGeneratedOutputs([]generatedOutput{{path: first, contents: []byte("changed first")}, {path: second, contents: []byte("changed second")}}, func(output generatedOutput) error {
+		writes++
+		if writes == 2 {
+			return errors.New("injected commit failure")
+		}
+		return atomicWrite(output.path, output.contents)
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected commit failure") {
+		t.Fatalf("commitGeneratedOutputs() error = %v", err)
+	}
+	for path, want := range map[string]string{first: "original first", second: "original second"} {
+		contents, readErr := os.ReadFile(path)
+		if readErr != nil || string(contents) != want {
+			t.Fatalf("%s = %q, %v; want %q", path, contents, readErr, want)
+		}
+	}
+}
+
 func TestAddRejectsComplexGETBody(t *testing.T) {
 	operation, err := normalizeOperation(AddConfig{
 		Operation: "Search", Method: "GET", Path: "/search", RequestType: "SearchRequest",
 	})
 	if err == nil || operation.Name != "" {
 		t.Fatalf("normalizeOperation() = %+v, %v; want error", operation, err)
+	}
+}
+
+func TestParseFieldsRejectsGeneratedGoNameCollision(t *testing.T) {
+	_, err := parseFields([]string{"user-id:string", "user_id:string"}, http.MethodGet)
+	if err == nil || !strings.Contains(err.Error(), "both map to Go field UserId") {
+		t.Fatalf("parseFields() error = %v", err)
+	}
+}
+
+func TestAddRejectsExistingServiceMethodWithoutChangingContract(t *testing.T) {
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "demo")
+	if _, err := projectgen.Generate(projectgen.Config{Name: "demo", Module: "example.com/demo", Type: projectgen.TypeWeb, TargetDir: root, JGOReplace: repositoryRoot, SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	custom := filepath.Join(root, "internal", "service", "custom.go")
+	if err := os.WriteFile(custom, []byte("package service\n\nfunc (*Service) GetUser() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	contractPath := filepath.Join(root, filepath.FromSlash(SpecPath))
+	before, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = Add(AddConfig{Root: root, Operation: "GetUser", Method: http.MethodGet, Path: "/get_user"})
+	if err == nil || !strings.Contains(err.Error(), "already implemented") {
+		t.Fatalf("Add() error = %v", err)
+	}
+	after, readErr := os.ReadFile(contractPath)
+	if readErr != nil || !bytes.Equal(after, before) {
+		t.Fatalf("contract changed after rejected add: error=%v", readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "internal", "service", "get_user.go")); !os.IsNotExist(statErr) {
+		t.Fatalf("service stub created after rejected add: %v", statErr)
 	}
 }
 

@@ -35,7 +35,7 @@ func TestAddServerAndClientFromLocalReplacement(t *testing.T) {
 	}
 
 	assertContains(t, filepath.Join(service, "internal/transport/grpc/external.gen.go"), "RegisterUserServiceServer")
-	assertContains(t, filepath.Join(service, "internal/service/user_service_get_user.go"), "UserServiceGetUser")
+	assertContains(t, filepath.Join(service, "internal/service/company_api_v1_user_service_get_user.go"), "CompanyApiV1UserServiceGetUser")
 	assertContains(t, filepath.Join(service, "internal/rpcclient/clients.gen.go"), "User pb0.UserServiceClient")
 	assertContains(t, filepath.Join(service, "configs/local.yaml"), "user:")
 	assertContains(t, filepath.Join(service, "configs/local.yaml"), "readiness: required")
@@ -76,7 +76,7 @@ func TestAddServerRollsBackWhenTidyFails(t *testing.T) {
 	assertFileEquals(t, filepath.Join(service, "go.mod"), goMod)
 	assertNotExist(t, filepath.Join(service, ".jgo", "rpc.json"))
 	assertNotExist(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"))
-	assertNotExist(t, filepath.Join(service, "internal", "service", "user_service_get_user.go"))
+	assertNotExist(t, filepath.Join(service, "internal", "service", "company_apiv1_user_service_get_user.go"))
 }
 
 func TestAddClientRollsBackWhenTidyFails(t *testing.T) {
@@ -350,7 +350,7 @@ func TestUnbindServerKeepsUserOwnedImplementation(t *testing.T) {
 	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService"}); err != nil {
 		t.Fatal(err)
 	}
-	stub := filepath.Join(service, "internal", "service", "user_service_get_user.go")
+	stub := filepath.Join(service, "internal", "service", "company_api_v1_user_service_get_user.go")
 	if err := UnbindServer(service, "UserService"); err != nil {
 		t.Fatal(err)
 	}
@@ -362,6 +362,223 @@ func TestUnbindServerKeepsUserOwnedImplementation(t *testing.T) {
 	if strings.Contains(manifest, "UserService") {
 		t.Fatalf("server manifest remains after unbind:\n%s", manifest)
 	}
+}
+
+func TestServerBindingsAllowSameServiceAcrossPackages(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	copyGeneratedService(t, protocol, "gen/pb/company_api/v2/service_grpc.pb.go", "company_apiv2")
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	v1 := "example.com/company-api/gen/pb/company_api/v1"
+	v2 := "example.com/company-api/gen/pb/company_api/v2"
+	for _, packagePath := range []string{v1, v2} {
+		if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: packagePath, Service: "UserService", SkipTidy: true}); err != nil {
+			t.Fatalf("bind %s: %v", packagePath, err)
+		}
+	}
+	legacy, err := loadManifest(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for bindingIndex := range legacy.Servers {
+		for methodIndex := range legacy.Servers[bindingIndex].Methods {
+			legacy.Servers[bindingIndex].Methods[methodIndex].Business = ""
+		}
+	}
+	if err := saveManifest(service, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := Generate(service); err != nil || !changed {
+		t.Fatalf("Generate() = %v, %v", changed, err)
+	}
+	manifest := string(mustReadTestFile(t, filepath.Join(service, ".jgo", "rpc.json")))
+	for _, expected := range []string{"CompanyApiV1UserServiceGetUser", "CompanyApiV2UserServiceGetUser"} {
+		if !strings.Contains(manifest, `"business": "`+expected+`"`) {
+			t.Fatalf("manifest lacks %s:\n%s", expected, manifest)
+		}
+	}
+	assertOccurrenceCount(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"), "RegisterUserServiceServer", 2)
+	if err := UnbindServer(service, "UserService"); err == nil || !strings.Contains(err.Error(), "multiple packages") {
+		t.Fatalf("ambiguous UnbindServer() error = %v", err)
+	}
+	if err := UnbindServer(service, "UserService", v1); err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"), v2)
+	if strings.Contains(string(mustReadTestFile(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"))), v1) {
+		t.Fatal("v1 binding remains after package-qualified unbind")
+	}
+}
+
+func TestServerBindingsWithSameGoPackageUseImportPathQualifiedBusinessNames(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	copyGeneratedService(t, protocol, "gen/pb/company_api/v2/service_grpc.pb.go", "company_apiv1")
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	for _, packagePath := range []string{
+		"example.com/company-api/gen/pb/company_api/v1",
+		"example.com/company-api/gen/pb/company_api/v2",
+	} {
+		if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: packagePath, Service: "UserService", SkipTidy: true}); err != nil {
+			t.Fatalf("bind %s: %v", packagePath, err)
+		}
+	}
+	manifest := string(mustReadTestFile(t, filepath.Join(service, ".jgo", "rpc.json")))
+	for _, expected := range []string{"CompanyApiV1UserServiceGetUser", "CompanyApiV2UserServiceGetUser"} {
+		if !strings.Contains(manifest, `"business": "`+expected+`"`) {
+			t.Fatalf("manifest lacks %s:\n%s", expected, manifest)
+		}
+	}
+}
+
+func TestGenerateRejectsSilentLegacyBusinessMethodMigration(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadManifest(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Servers[0].Methods[0].Business = ""
+	if err := saveManifest(service, state); err != nil {
+		t.Fatal(err)
+	}
+	qualifiedStub := filepath.Join(service, "internal", "service", "company_api_v1_user_service_get_user.go")
+	if err := os.Remove(qualifiedStub); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(service, "internal", "service", "legacy_user.go")
+	if err := os.WriteFile(legacy, []byte("package service\n\nfunc (*Service) UserServiceGetUser() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(service); err == nil || !strings.Contains(err.Error(), "rename it to Service.CompanyApiV1UserServiceGetUser") {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if err := Validate(service); err == nil || !strings.Contains(err.Error(), "rename it to Service.CompanyApiV1UserServiceGetUser") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte(`package service
+
+import (
+	"context"
+	pb "example.com/company-api/gen/pb/company_api/v1"
+)
+
+func (*Service) CompanyApiV1UserServiceGetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, error) {
+	return nil, nil
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := Generate(service); err != nil || !changed {
+		t.Fatalf("Generate() after migration = %v, %v", changed, err)
+	}
+	if _, err := os.Stat(qualifiedStub); !os.IsNotExist(err) {
+		t.Fatalf("generator created a duplicate qualified stub: %v", err)
+	}
+	assertContains(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"), "application.CompanyApiV1UserServiceGetUser")
+	command := exec.Command("go", "test", "./...")
+	command.Dir = service
+	command.Env = append(os.Environ(), "GOWORK=off")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("migrated project does not compile: %v\n%s", err, output)
+	}
+}
+
+func TestImportPathNormalizationCollisionsUseStableSuffix(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	copyGeneratedService(t, protocol, "gen/pb/gen/company_api/v1/service_grpc.pb.go", "company_apiv1")
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	packages := []string{
+		"example.com/company-api/gen/pb/company_api/v1",
+		"example.com/company-api/gen/pb/gen/company_api/v1",
+	}
+	for _, packagePath := range packages {
+		if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: packagePath, Service: "UserService", SkipTidy: true}); err != nil {
+			t.Fatalf("bind %s: %v", packagePath, err)
+		}
+	}
+	state, err := loadManifest(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Servers) != 2 || state.Servers[0].Methods[0].Business == state.Servers[1].Methods[0].Business {
+		t.Fatalf("colliding paths were not disambiguated: %+v", state.Servers)
+	}
+	foundSuffix := false
+	for _, binding := range state.Servers {
+		if strings.Contains(binding.Methods[0].Business, "Path") {
+			foundSuffix = true
+		}
+	}
+	if !foundSuffix {
+		t.Fatalf("collision did not receive a stable path suffix: %+v", state.Servers)
+	}
+}
+
+func TestImportPathPunctuationProducesValidBusinessName(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	copyGeneratedService(t, protocol, "gen/pb/company.api/v3/service_grpc.pb.go", "company_apiv3")
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	binding, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: "example.com/company-api/gen/pb/company.api/v3", Service: "UserService", SkipTidy: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binding.Methods[0].Business; got != "CompanyApiV3UserServiceGetUser" {
+		t.Fatalf("business name = %q", got)
+	}
+}
+
+func TestManifestRejectsInvalidBusinessMethodName(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadManifest(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Servers[0].Methods[0].Business = "unexportedMethod"
+	if err := saveManifest(service, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(service); err == nil || !strings.Contains(err.Error(), "exported Go identifier") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	state.Servers[0].Methods[0].Business = "WrongExportedName"
+	if err := saveManifest(service, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(service); err == nil || !strings.Contains(err.Error(), "does not match deterministic name") {
+		t.Fatalf("Validate() deterministic-name error = %v", err)
+	}
+}
+
+func TestMissingManifestDetectsAndReconcilesStaleBindings(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeMixed, protocol)
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BindClient(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(service, ".jgo", "rpc.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(service); err == nil || !strings.Contains(err.Error(), "without manifest entries") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	changed, err := Generate(service)
+	if err != nil || !changed {
+		t.Fatalf("Generate() = %v, %v", changed, err)
+	}
+	if err := Validate(service); err != nil {
+		t.Fatalf("Validate() after reconciliation = %v", err)
+	}
+	assertContains(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"), "func registerExternal(grpc.ServiceRegistrar, *service.Service) {}")
+	assertContains(t, filepath.Join(service, "internal", "rpcclient", "clients.gen.go"), "type Clients struct{}")
 }
 
 func TestValidateRejectsMissingBoundClientConfiguration(t *testing.T) {

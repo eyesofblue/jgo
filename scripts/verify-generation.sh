@@ -115,6 +115,25 @@ for project_type in web grpc mixed proto; do
   after="$(snapshot "${project_root}")"
   test "${before}" = "${after}"
 
+  if [[ "${project_type}" == "grpc" ]]; then
+    # Removing a contract must not leave a deleted RPC registered. The first
+    # attempt deliberately keeps the user-owned implementation, so generation
+    # must fail and roll managed outputs back. After the owner removes that
+    # implementation, generation cleans the stale protobuf and transport files.
+    rm "${proto_file}"
+    if "${temporary_root}/jgo" pb generate --root "${project_root}"; then
+      echo "protobuf removal unexpectedly succeeded with a stale user implementation" >&2
+      exit 1
+    fi
+    test -f "${project_root}/gen/pb/demo_grpc/v1/service.pb.go"
+    grep -q 'RegisterDemoGrpcServiceServer' "${project_root}/internal/transport/grpc/register.gen.go"
+    rm "${project_root}/internal/service/demo_grpc_service_get_user.go"
+    "${temporary_root}/jgo" pb generate --root "${project_root}"
+    test ! -e "${project_root}/gen/pb/demo_grpc/v1/service.pb.go"
+    test ! -e "${project_root}/gen/pb/demo_grpc/v1/service_grpc.pb.go"
+    ! grep -q 'RegisterDemoGrpcServiceServer' "${project_root}/internal/transport/grpc/register.gen.go"
+  fi
+
   (
     cd "${project_root}"
     go test ./...
@@ -146,12 +165,12 @@ cp "${repository_root}/scripts/testdata/e2e_service.proto" \
   "${temporary_root}/jgo" doctor
   server_bindings="$("${temporary_root}/jgo" list)"
   [[ "${server_bindings}" == *external-server*DemoProtoService* ]]
-  cp "${repository_root}/scripts/testdata/e2e_grpc_get_user.go" \
-    internal/service/demo_proto_service_get_user.go
+	  cp "${repository_root}/scripts/testdata/e2e_grpc_get_user.go" \
+	    internal/service/demo_proto_v1_demo_proto_service_get_user.go
   grep -q 'RegisterDemoProtoServiceServer' internal/transport/grpc/external.gen.go
   grep -q 'RegisterAdminServiceServer' internal/transport/grpc/external.gen.go
   test "$(grep -c 'example.com/demo-proto/gen/pb/demo_proto/v1' internal/transport/grpc/external.gen.go)" = "1"
-  grep -q 'DemoProtoServiceGetUser' internal/service/demo_proto_service_get_user.go
+  grep -q 'DemoProtoV1DemoProtoServiceGetUser' internal/service/demo_proto_v1_demo_proto_service_get_user.go
   go test ./...
   go build ./...
 )

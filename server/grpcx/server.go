@@ -18,6 +18,7 @@ import (
 )
 
 var _ app.Component = (*Server)(nil)
+var _ app.StartupNotifier = (*Server)(nil)
 
 // Server adapts grpc.Server to the JGO component lifecycle.
 type Server struct {
@@ -34,6 +35,8 @@ type Server struct {
 	activity      *activityTracker
 	server        *grpc.Server
 	started       bool
+	startup       chan struct{}
+	startupOnce   sync.Once
 	stopRequested bool
 }
 
@@ -80,6 +83,7 @@ func New(opts ...Option) (*Server, error) {
 		stream:     stream,
 		options:    append([]grpc.ServerOption(nil), config.serverOptions...),
 		activity:   activity,
+		startup:    make(chan struct{}),
 	}, nil
 }
 
@@ -103,6 +107,8 @@ func validate(config config) error {
 }
 
 func (s *Server) Name() string { return s.name }
+
+func (s *Server) Started() <-chan struct{} { return s.startup }
 
 func (s *Server) Address() string {
 	s.mu.Lock()
@@ -173,6 +179,7 @@ func (s *Server) prepare(ctx context.Context) (net.Listener, *grpc.Server, error
 	if s.reflection {
 		reflection.Register(server)
 	}
+	s.startupOnce.Do(func() { close(s.startup) })
 	return listener, server, nil
 }
 

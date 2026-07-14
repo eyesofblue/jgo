@@ -11,6 +11,7 @@ var fieldNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 func parseFields(values []string, method string) ([]Field, error) {
 	fields := make([]Field, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
+	seenGoNames := make(map[string]string, len(values))
 	defaultSource := "query"
 	if method == "POST" {
 		defaultSource = "body"
@@ -47,7 +48,11 @@ func parseFields(values []string, method string) ([]Field, error) {
 		if _, exists := seen[field.Name]; exists {
 			return nil, fmt.Errorf("%w: duplicate field %q", ErrInvalidField, field.Name)
 		}
+		if existing, exists := seenGoNames[field.GoName]; exists {
+			return nil, fmt.Errorf("%w: fields %q and %q both map to Go field %s", ErrInvalidField, existing, field.Name, field.GoName)
+		}
 		seen[field.Name] = struct{}{}
+		seenGoNames[field.GoName] = field.Name
 		fields = append(fields, field)
 	}
 	return fields, nil

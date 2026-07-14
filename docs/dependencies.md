@@ -92,4 +92,4 @@ github.com/eyesofblue/jgo v0.4.0
 
 ## mixed 项目的业务方法命名
 
-HTTP 业务方法使用 OpenAPI `operationId`，例如 `GetUser`。gRPC 业务方法使用 `<Service><RPC>`，例如 `UserServiceGetUser`，从而避免 mixed 项目中 HTTP 与 gRPC 同名接口发生 Go 方法冲突，也避免不同 gRPC service 复用同一个 RPC 名时冲突。
+HTTP 业务方法使用 OpenAPI `operationId`，例如 `GetUser`。项目自身 protobuf 业务方法使用 `<Service><RPC>`，例如 `UserServiceGetUser`；外部 server binding 从完整 import path 提取稳定前缀，使用 `<PackagePath><Service><RPC>`，例如 `CompanyUserV2UserServiceGetUser`。因此，即使 v1/v2 的 Go package 都显式命名为 `user`，也可以同时绑定；规范化碰撞时为后绑定项增加稳定 path 摘要。旧 manifest 尚未记录 `business` 且旧业务方法仍存在时，doctor/generate 会要求先显式重命名，随后复用该实现而不会创建重复桩。

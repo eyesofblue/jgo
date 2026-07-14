@@ -59,7 +59,7 @@ jgo pb breaking --against <buf-source>
 jgo rpc server bind <Service> --module <module>[@<version>] \
   [--package <exact-go-import>]
 
-jgo rpc server unbind <Service>
+jgo rpc server unbind <Service> [--package <exact-go-import>]
 
 jgo rpc client bind <Service> --module <module>[@<version>] \
   [--package <exact-go-import>] [--name <client>] \
@@ -68,7 +68,7 @@ jgo rpc client bind <Service> --module <module>[@<version>] \
 jgo rpc client unbind <client-name>
 ```
 
-绑定粒度始终是整个 protobuf Service；业务代码仍按 Method 调用。`server bind` 只用于 grpc/mixed，`client bind` 可用于 web/grpc/mixed。
+绑定粒度始终是整个 protobuf Service；业务代码仍按 Method 调用。服务端以 `package + Service` 为唯一键，允许同名 v1/v2 并存；外部业务方法使用 `<PackagePath><Service><Method>`，所以两个版本采用相同 Go package 名也能共存。同名 Service 并存时，`server unbind` 必须用 `--package` 精确选择。`server bind` 只用于 grpc/mixed，`client bind` 可用于 web/grpc/mixed。
 
 带 `@version` 时解析正式 module 版本或与该版本匹配的用户 `replace`，不会扫描 go.work 中的未发布代码。省略版本时只允许解析活动 `go.work` 中的同路径 module。
 

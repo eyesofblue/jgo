@@ -55,6 +55,7 @@ type Service struct {
 	HTTPAddress     string   `yaml:"http_address"`
 	GRPCAddress     string   `yaml:"grpc_address"`
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
+	MaxBodyBytes    int64    `yaml:"max_body_bytes"`
 }
 
 // Telemetry contains process observability settings.
@@ -102,6 +103,7 @@ func Load(arguments []string) (Config, error) {
 			HTTPAddress:     ":8080",
 			GRPCAddress:     ":9090",
 			ShutdownTimeout: Duration{Duration: 10 * time.Second},
+			MaxBodyBytes:    4 << 20,
 		},
 		Telemetry: Telemetry{Tracing: Tracing{
 			Enabled:     true,
@@ -181,6 +183,9 @@ func (config Config) Validate() error {
 	}
 	if config.Service.ShutdownTimeout.Duration <= 0 {
 		return errors.New("config: service.shutdown_timeout must be positive")
+	}
+	if config.Service.MaxBodyBytes <= 0 {
+		return errors.New("config: service.max_body_bytes must be positive")
 	}
 	if config.Telemetry.Tracing.SampleRatio < 0 || config.Telemetry.Tracing.SampleRatio > 1 {
 		return errors.New("config: telemetry.tracing.sample_ratio must be between 0 and 1")

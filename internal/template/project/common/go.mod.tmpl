@@ -5,6 +5,7 @@ go {{.GoVersion}}
 require github.com/eyesofblue/jgo {{.JGOVersion}}
 require gopkg.in/yaml.v3 v3.0.1
 {{if .HasWeb}}
+require github.com/getkin/kin-openapi v0.127.0
 require github.com/oapi-codegen/runtime v1.1.1
 {{end}}
 {{if .HasGRPC}}

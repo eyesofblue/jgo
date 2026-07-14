@@ -14,6 +14,7 @@ import (
 	"github.com/eyesofblue/jgo/app"
 	"github.com/eyesofblue/jgo/middleware"
 	"github.com/eyesofblue/jgo/middleware/accesslog"
+	"github.com/eyesofblue/jgo/middleware/bodylimit"
 	"github.com/eyesofblue/jgo/middleware/recovery"
 	timeoutmw "github.com/eyesofblue/jgo/middleware/timeout"
 	"github.com/eyesofblue/jgo/middleware/traceid"
@@ -22,6 +23,7 @@ import (
 )
 
 var _ app.Component = (*Server)(nil)
+var _ app.StartupNotifier = (*Server)(nil)
 
 // Server adapts net/http.Server to the JGO component lifecycle.
 type Server struct {
@@ -37,6 +39,8 @@ type Server struct {
 	server        *http.Server
 	listener      net.Listener
 	started       bool
+	startup       chan struct{}
+	startupOnce   sync.Once
 	stopRequested bool
 }
 
@@ -62,6 +66,7 @@ func New(opts ...Option) (*Server, error) {
 			accesslog.New(config.logger),
 			timeoutmw.New(config.requestTimeout),
 			recovery.New(config.logger),
+			bodylimit.New(config.maxBodyBytes),
 		)
 		// Server observers wrap timeout/recovery while remaining inside the
 		// OpenTelemetry handler so measurements retain the active trace context.
@@ -81,6 +86,7 @@ func New(opts ...Option) (*Server, error) {
 		address:    strings.TrimSpace(config.address),
 		handler:    handler,
 		logger:     config.logger,
+		startup:    make(chan struct{}),
 		readHeader: config.readHeaderTimeout,
 		read:       config.readTimeout,
 		write:      config.writeTimeout,
@@ -99,13 +105,15 @@ func validate(config config) error {
 		return ErrNilHandler
 	}
 	if config.readHeaderTimeout <= 0 || config.readTimeout <= 0 || config.writeTimeout <= 0 ||
-		config.idleTimeout <= 0 || (config.defaultMiddleware && config.requestTimeout <= 0) {
+		config.idleTimeout <= 0 || config.maxBodyBytes <= 0 || (config.defaultMiddleware && config.requestTimeout <= 0) {
 		return ErrInvalidTimeout
 	}
 	return nil
 }
 
 func (s *Server) Name() string { return s.name }
+
+func (s *Server) Started() <-chan struct{} { return s.startup }
 
 // Address returns the configured address before Start and the bound listener
 // address after Start. This is useful when binding to port 0 in tests.
@@ -153,6 +161,7 @@ func (s *Server) Start(ctx context.Context) error {
 		},
 	}
 	server := s.server
+	s.startupOnce.Do(func() { close(s.startup) })
 	s.mu.Unlock()
 
 	s.logger.InfoContext(ctx, "http server starting", "name", s.name, "address", listener.Addr().String())

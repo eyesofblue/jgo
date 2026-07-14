@@ -2,6 +2,8 @@ package project
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -24,6 +26,13 @@ func TestConfigValidation(t *testing.T) {
 			name: "invalid module",
 			change: func(config *Config) {
 				config.Module = "example.com//demo"
+			},
+			want: ErrInvalidModule,
+		},
+		{
+			name: "module with trailing dot",
+			change: func(config *Config) {
+				config.Module = "example.com/demo."
 			},
 			want: ErrInvalidModule,
 		},
@@ -65,6 +74,17 @@ func TestConfigValidation(t *testing.T) {
 				t.Fatalf("normalizeAndValidate() error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestConfigRejectsReplaceWithLookalikeModule(t *testing.T) {
+	replacement := t.TempDir()
+	if err := os.WriteFile(filepath.Join(replacement, "go.mod"), []byte("module github.com/eyesofblue/jgo-fake\n\ngo 1.24.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{Name: "demo", Module: "example.com/demo", Type: TypeWeb, TargetDir: filepath.Join(t.TempDir(), "demo"), JGOReplace: replacement}
+	if err := config.normalizeAndValidate(); !errors.Is(err, ErrInvalidReplace) {
+		t.Fatalf("normalizeAndValidate() error = %v, want %v", err, ErrInvalidReplace)
 	}
 }
 

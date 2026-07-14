@@ -9,6 +9,7 @@ All notable JGO changes are documented here. JGO follows Semantic Versioning.
 - Replaced protobuf authoring commands with `jgo pb service add`, `jgo pb method add`, and `jgo pb generate`.
 - Replaced external RPC add commands with Service-grained `jgo rpc server/client bind` and `unbind`.
 - Removed all pre-v0.4 aliases, including `rpc pbservice`, `rpc pbapi`, `rpc generate`, and `rpc server/client add`.
+- External server business methods now use `<PackagePath><Service><Method>`; existing pre-v0.4 external implementations must adopt the package-qualified method name.
 
 ### Added
 
@@ -28,6 +29,14 @@ All notable JGO changes are documented here. JGO follows Semantic Versioning.
 - Strict-by-default RPC readiness, panic-isolated dependency checks, lifecycle-safe Management/gRPC startup, and multi-Catalog Metrics validation.
 - Symlink-safe protobuf authoring, unambiguous multi-file package selection, safe package-name derivation, and generated business method/file collision detection.
 - Deterministic generation verification without `pipefail`/SIGPIPE false failures.
+- Reconciliation of stale protobuf outputs when contracts or entire proto files are removed.
+- Bounded readiness checks, default HTTP request-body limits, strict single-document JSON decoding, and Go-toolchain module-path validation.
+- Transactional OpenAPI generation with runtime request-schema validation, plus HTTP authentication/authorization wiring through `securityx`.
+- Package-qualified external server business methods, simultaneous same-named v1/v2 Service bindings, package-qualified unbind, and stale binding reconciliation when the manifest is lost.
+- Explicit zero trace sampling, exact `--jgo-replace` module identity checks, and hard-timeout/panic-safe legacy health probes.
+- Cross-generator rollback for unified `jgo generate`, pre-parse HTTP authentication, preserved 413 body-limit responses, and collision-safe HTTP service/field generation.
+- Import-path-qualified external RPC names even when versions share one Go package name, explicit legacy implementation migration, and strict manifest business-name validation.
+- Complete legacy RPC migration reuse, normalized-path collision suffixes, process lifecycle readiness gating, permission-exact generation rollback, and user-owned service symlink preservation.
 
 ## v0.3.0 - 2026-07-14
 

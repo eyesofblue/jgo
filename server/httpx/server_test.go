@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,30 @@ func TestDefaultMiddlewareRecoversPanics(t *testing.T) {
 	}
 }
 
+func TestDefaultMiddlewareLimitsRequestBodies(t *testing.T) {
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var input map[string]string
+		if err := response.DecodeJSON(request, &input); err != nil {
+			_ = response.JSONDecodeError(writer, request, err)
+			return
+		}
+		_ = response.Success(writer, request, nil)
+	})
+	server, err := New(
+		WithHandler(handler),
+		WithMaxBodyBytes(8),
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"value":"too large"}`)))
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusRequestEntityTooLarge, recorder.Body.String())
+	}
+}
+
 func TestOuterMiddlewareObservesFinalTimeoutAndRecoveryStatus(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -184,6 +209,7 @@ func TestServerValidatesConfig(t *testing.T) {
 		{name: "address", opt: WithAddress(" "), want: ErrInvalidAddress},
 		{name: "handler", opt: WithHandler(nil), want: ErrNilHandler},
 		{name: "timeout", opt: WithReadTimeout(0), want: ErrInvalidTimeout},
+		{name: "body limit", opt: WithMaxBodyBytes(0), want: ErrInvalidTimeout},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

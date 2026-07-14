@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -51,6 +52,35 @@ func TestCheckReturnsWhenCheckerIgnoresContext(t *testing.T) {
 	dependency := report.Dependencies["database"]
 	if report.Ready || dependency.Status != "NOT_READY" || !strings.Contains(dependency.Error, "deadline exceeded") {
 		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestRepeatedChecksDoNotStartOverlappingStuckCheckers(t *testing.T) {
+	registry := New(5 * time.Millisecond)
+	release := make(chan struct{})
+	defer close(release)
+	var starts atomic.Int64
+	if err := registry.Add("database", true, CheckFunc(func(context.Context) error {
+		starts.Add(1)
+		<-release
+		return nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	first := registry.Check(context.Background())
+	if first.Ready {
+		t.Fatalf("first report = %+v", first)
+	}
+	for range 100 {
+		report := registry.Check(context.Background())
+		dependency := report.Dependencies["database"]
+		if report.Ready || !strings.Contains(dependency.Error, "still running") {
+			t.Fatalf("report = %+v", report)
+		}
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("checker starts = %d, want 1", got)
 	}
 }
 

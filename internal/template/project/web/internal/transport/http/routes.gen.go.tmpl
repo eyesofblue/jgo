@@ -4,10 +4,12 @@ package httptransport
 import (
 	"net/http"
 
+	"github.com/eyesofblue/jgo/middleware"
 	"{{.Module}}/internal/service"
 )
 
-func registerGeneratedRoutes(mux *http.ServeMux, application *service.Service) {
+func registerGeneratedRoutes(mux *http.ServeMux, application *service.Service, middlewares ...middleware.Middleware) {
 	_ = mux
 	_ = application
+	_ = middlewares
 }

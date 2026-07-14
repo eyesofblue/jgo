@@ -5,6 +5,7 @@
 package tooldeps
 
 import (
-{{if .HasWeb}}	_ "github.com/oapi-codegen/runtime"
+{{if .HasWeb}}	_ "github.com/getkin/kin-openapi/openapi3filter"
+	_ "github.com/oapi-codegen/runtime"
 {{end}}{{if .HasGRPC}}	_ "google.golang.org/protobuf/proto"
 {{end}})

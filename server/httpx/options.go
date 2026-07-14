@@ -14,6 +14,7 @@ const (
 	defaultWriteTimeout      = 30 * time.Second
 	defaultIdleTimeout       = 60 * time.Second
 	defaultRequestTimeout    = 30 * time.Second
+	defaultMaxBodyBytes      = int64(4 << 20)
 )
 
 type config struct {
@@ -26,6 +27,7 @@ type config struct {
 	writeTimeout      time.Duration
 	idleTimeout       time.Duration
 	requestTimeout    time.Duration
+	maxBodyBytes      int64
 	defaultMiddleware bool
 	middlewares       []middleware.Middleware
 	outerMiddlewares  []middleware.Middleware
@@ -42,6 +44,7 @@ func defaultConfig() config {
 		writeTimeout:      defaultWriteTimeout,
 		idleTimeout:       defaultIdleTimeout,
 		requestTimeout:    defaultRequestTimeout,
+		maxBodyBytes:      defaultMaxBodyBytes,
 		defaultMiddleware: true,
 	}
 }
@@ -83,6 +86,11 @@ func WithIdleTimeout(timeout time.Duration) Option {
 
 func WithRequestTimeout(timeout time.Duration) Option {
 	return func(config *config) { config.requestTimeout = timeout }
+}
+
+// WithMaxBodyBytes sets the maximum request body size accepted by the server.
+func WithMaxBodyBytes(maxBytes int64) Option {
+	return func(config *config) { config.maxBodyBytes = maxBytes }
 }
 
 // WithDefaultMiddleware controls OpenTelemetry tracing, trace ID response,

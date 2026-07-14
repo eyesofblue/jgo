@@ -3,10 +3,46 @@ package openapi
 import (
 	"bytes"
 	"fmt"
+	"go/ast"
 	"go/format"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+func serviceMethodExists(directory, name string) (bool, error) {
+	packages, err := parser.ParseDir(token.NewFileSet(), directory, func(info os.FileInfo) bool {
+		return !strings.HasSuffix(info.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		return false, fmt.Errorf("parse service package: %w", err)
+	}
+	for _, pkg := range packages {
+		for _, file := range pkg.Files {
+			for _, declaration := range file.Decls {
+				function, ok := declaration.(*ast.FuncDecl)
+				if !ok || function.Name.Name != name || function.Recv == nil || len(function.Recv.List) != 1 {
+					continue
+				}
+				receiver := function.Recv.List[0].Type
+				if pointer, ok := receiver.(*ast.StarExpr); ok {
+					receiver = pointer.X
+				}
+				if identifier, ok := receiver.(*ast.Ident); ok && identifier.Name == "Service" {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
+func serviceDirectory(root string) string {
+	return filepath.Join(root, "internal", "service")
+}
 
 var (
 	firstCapPattern = regexp.MustCompile(`(.)([A-Z][a-z]+)`)

@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	componentName      = "telemetry-tracing"
-	defaultSampleRatio = 0.1
+	componentName = "telemetry-tracing"
 )
 
 var _ app.Component = (*Tracing)(nil)
@@ -74,12 +73,8 @@ func NewTracing(ctx context.Context, config TracingConfig) (*Tracing, error) {
 		if err != nil {
 			return nil, err
 		}
-		ratio := config.SampleRatio
-		if ratio == 0 {
-			ratio = defaultSampleRatio
-		}
 		options = append(options,
-			sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))),
+			sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(config.SampleRatio))),
 			sdktrace.WithBatcher(exporter),
 		)
 	}

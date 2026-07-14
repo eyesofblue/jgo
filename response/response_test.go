@@ -1,6 +1,7 @@
 package response
 
 import (
+	"bytes"
 	"encoding/json"
 	stderrors "errors"
 	"net/http"
@@ -64,5 +65,38 @@ func TestErrorDoesNotExposeUnknownError(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `"data":null`) {
 		t.Fatalf("error response must contain null data: %s", response.Body.String())
+	}
+}
+
+func TestDecodeJSONRejectsTrailingValues(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"id":1}{"id":2}`))
+	var body map[string]int
+	err := DecodeJSON(request, &body)
+	if err == nil || body["id"] != 1 {
+		t.Fatalf("DecodeJSON() = body=%v err=%v", body, err)
+	}
+	recorder := httptest.NewRecorder()
+	if err := JSONDecodeError(recorder, request, err); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestDecodeJSONMapsOversizedBodyTo413(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"value":"too large"}`))
+	recorder := httptest.NewRecorder()
+	request.Body = http.MaxBytesReader(recorder, request.Body, 5)
+	var body map[string]string
+	err := DecodeJSON(request, &body)
+	if err == nil {
+		t.Fatal("DecodeJSON() error = nil")
+	}
+	if err := JSONDecodeError(recorder, request, err); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), "request body too large") {
+		t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
 	}
 }

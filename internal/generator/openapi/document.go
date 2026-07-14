@@ -53,6 +53,11 @@ func Add(input AddConfig) error {
 	if err != nil {
 		return err
 	}
+	if exists, err := serviceMethodExists(serviceDirectory(project.root), operation.Name); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("%w: Service.%s is already implemented in the service package", ErrServiceFileExists, operation.Name)
+	}
 
 	stubPath := filepath.Join(project.root, "internal", "service", snakeCase(operation.Name)+".go")
 	if _, err := os.Lstat(stubPath); err == nil {

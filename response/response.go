@@ -4,10 +4,15 @@ package response
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 
 	jerrors "github.com/eyesofblue/jgo/errors"
 )
+
+var errMultipleJSONValues = errors.New("multiple JSON values are not allowed")
 
 // Envelope is the standard HTTP API response shape.
 type Envelope struct {
@@ -45,6 +50,45 @@ func Error(writer http.ResponseWriter, request *http.Request, err error) error {
 		Msg:  message,
 		Data: nil,
 	})
+}
+
+// DecodeJSON decodes exactly one JSON document. Request body size is enforced
+// by the HTTP server's body-limit middleware.
+func DecodeJSON(request *http.Request, target any) error {
+	if request == nil || request.Body == nil {
+		return io.EOF
+	}
+	decoder := json.NewDecoder(request.Body)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errMultipleJSONValues
+		}
+		return fmt.Errorf("trailing JSON data: %w", err)
+	}
+	return nil
+}
+
+// JSONDecodeError writes the standard response for malformed or oversized
+// JSON request bodies.
+func JSONDecodeError(writer http.ResponseWriter, request *http.Request, err error) error {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return Error(writer, request, jerrors.New(
+			jerrors.CodeInvalidArgument,
+			"request body too large",
+			jerrors.WithHTTPStatus(http.StatusRequestEntityTooLarge),
+		))
+	}
+	return Error(writer, request, jerrors.Wrap(
+		err,
+		jerrors.CodeInvalidArgument,
+		"invalid JSON body",
+		jerrors.WithHTTPStatus(http.StatusBadRequest),
+	))
 }
 
 type businessCodeWriter interface{ SetBusinessCode(int) }

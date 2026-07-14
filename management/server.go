@@ -18,6 +18,7 @@ import (
 )
 
 var _ app.Component = (*Server)(nil)
+var _ app.StartupNotifier = (*Server)(nil)
 
 type Config struct {
 	Address         string
@@ -29,12 +30,14 @@ type Config struct {
 }
 
 type Server struct {
-	mu       sync.Mutex
-	config   Config
-	listener net.Listener
-	server   *http.Server
-	started  bool
-	stopped  bool
+	mu        sync.Mutex
+	config    Config
+	listener  net.Listener
+	server    *http.Server
+	started   bool
+	startup   chan struct{}
+	startOnce sync.Once
+	stopped   bool
 }
 
 var (
@@ -59,10 +62,11 @@ func New(config Config) (*Server, error) {
 	if config.MetricsEnabled && config.MetricsHandler == nil {
 		return nil, ErrMetricsHandlerMissing
 	}
-	return &Server{config: config}, nil
+	return &Server{config: config, startup: make(chan struct{})}, nil
 }
 
-func (server *Server) Name() string { return "management" }
+func (server *Server) Name() string             { return "management" }
+func (server *Server) Started() <-chan struct{} { return server.startup }
 func (server *Server) Address() string {
 	server.mu.Lock()
 	defer server.mu.Unlock()
@@ -108,6 +112,7 @@ func (server *Server) Start(ctx context.Context) error {
 	}
 	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	server.listener, server.server = listener, httpServer
+	server.startOnce.Do(func() { close(server.startup) })
 	server.mu.Unlock()
 	server.config.Logger.InfoContext(ctx, "management server starting", "address", listener.Addr().String())
 	err = httpServer.Serve(listener)

@@ -3,6 +3,7 @@ package rpcbinding
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
@@ -29,6 +31,7 @@ type Method struct {
 	Name     string `json:"name"`
 	Request  string `json:"request"`
 	Response string `json:"response"`
+	Business string `json:"business,omitempty"`
 }
 
 type Binding struct {
@@ -69,6 +72,24 @@ func Validate(projectRoot string) error {
 	if err := validateManifest(state); err != nil {
 		return err
 	}
+	for _, binding := range state.Servers {
+		if !bindingHasLegacyBusinessNames(binding) {
+			continue
+		}
+		if err := validateLegacyServerMigration(root, binding); err != nil {
+			return err
+		}
+		return fmt.Errorf("rpc binding: %s.%s requires package-qualified business names; run jgo generate", binding.Package, binding.Service)
+	}
+	if len(state.Servers) == 0 && len(state.Clients) == 0 {
+		stale, staleErr := bindingOutputsStale(root)
+		if staleErr != nil {
+			return staleErr
+		}
+		if stale {
+			return errors.New("rpc binding: generated bindings exist without manifest entries; run jgo generate")
+		}
+	}
 	if len(state.Servers) > 0 && !regularFile(filepath.Join(root, "internal", "transport", "grpc", "register.go")) {
 		return errors.New("rpc binding: server bindings require a grpc or mixed project")
 	}
@@ -83,6 +104,7 @@ func Validate(projectRoot string) error {
 		if resolveErr != nil {
 			return resolveErr
 		}
+		preserveServerBusinessNames(&resolved, existing)
 		if resolved.GoPackage != existing.GoPackage || !sameMethods(resolved.Methods, existing.Methods) {
 			return fmt.Errorf("rpc binding: %s.%s changed since the last bind; run jgo generate", existing.Package, existing.Service)
 		}
@@ -96,10 +118,11 @@ func validateManifest(state manifest) error {
 		if strings.TrimSpace(binding.Module) == "" || strings.TrimSpace(binding.Package) == "" || strings.TrimSpace(binding.Service) == "" {
 			return errors.New("rpc binding: server manifest entry is incomplete")
 		}
-		if _, exists := servers[binding.Service]; exists {
-			return fmt.Errorf("rpc binding: duplicate server service %q", binding.Service)
+		key := serverBindingKey(binding)
+		if _, exists := servers[key]; exists {
+			return fmt.Errorf("rpc binding: duplicate server service %s.%s", binding.Package, binding.Service)
 		}
-		servers[binding.Service] = struct{}{}
+		servers[key] = struct{}{}
 	}
 	if err := validateServerMethodNames(state.Servers); err != nil {
 		return err
@@ -124,12 +147,32 @@ func validateManifest(state manifest) error {
 }
 
 func validateServerMethodNames(bindings []Binding) error {
+	baseCounts := make(map[string]int)
+	for _, binding := range bindings {
+		for _, method := range binding.Methods {
+			baseCounts[qualifiedServerBusinessName(binding, method)]++
+		}
+	}
 	businessNames := make(map[string]string)
 	stubPaths := make(map[string]string)
 	for _, binding := range bindings {
 		for _, method := range binding.Methods {
-			owner := binding.Service + "." + method.Name
-			businessName := binding.Service + method.Name
+			owner := binding.Package + ":" + binding.Service + "." + method.Name
+			businessName := serverBusinessName(binding, method)
+			if !token.IsIdentifier(businessName) || !ast.IsExported(businessName) {
+				return fmt.Errorf("rpc binding: business method %q for %s must be an exported Go identifier", businessName, owner)
+			}
+			baseName := qualifiedServerBusinessName(binding, method)
+			collisionName := collisionServerBusinessName(binding, method)
+			if strings.TrimSpace(method.Business) != "" && method.Business != baseName && (baseCounts[baseName] == 1 || method.Business != collisionName) {
+				return fmt.Errorf("rpc binding: business method %q for %s does not match deterministic name %q", method.Business, owner, baseName)
+			}
+			// Legacy manifests do not yet contain the allocated business name.
+			// Defer collision allocation to Generate without making validation
+			// depend on manifest ordering.
+			if strings.TrimSpace(method.Business) == "" && baseCounts[baseName] > 1 {
+				continue
+			}
 			if existing, exists := businessNames[businessName]; exists && existing != owner {
 				return fmt.Errorf("rpc binding: %s and %s map to the same business method %s", existing, owner, businessName)
 			}
@@ -149,11 +192,237 @@ func sameMethods(left, right []Method) bool {
 		return false
 	}
 	for index := range left {
-		if left[index] != right[index] {
+		if left[index].Name != right[index].Name || left[index].Request != right[index].Request || left[index].Response != right[index].Response {
 			return false
 		}
 	}
 	return true
+}
+
+func serverBindingKey(binding Binding) string {
+	return binding.Package + "\x00" + binding.Service
+}
+
+func serverBusinessName(binding Binding, method Method) string {
+	if strings.TrimSpace(method.Business) != "" {
+		return method.Business
+	}
+	return qualifiedServerBusinessName(binding, method)
+}
+
+func preserveServerBusinessNames(resolved *Binding, existing Binding) {
+	if resolved == nil || serverBindingKey(*resolved) != serverBindingKey(existing) {
+		return
+	}
+	names := make(map[string]string, len(existing.Methods))
+	for _, method := range existing.Methods {
+		names[method.Name] = method.Business
+	}
+	for index := range resolved.Methods {
+		resolved.Methods[index].Business = names[resolved.Methods[index].Name]
+	}
+}
+
+func assignServerBusinessNames(bindings []Binding) {
+	occupied := make(map[string]struct{})
+	for _, binding := range bindings {
+		for _, method := range binding.Methods {
+			if strings.TrimSpace(method.Business) != "" {
+				occupied[method.Business] = struct{}{}
+			}
+		}
+	}
+	for bindingIndex := range bindings {
+		for methodIndex := range bindings[bindingIndex].Methods {
+			binding := bindings[bindingIndex]
+			method := bindings[bindingIndex].Methods[methodIndex]
+			if strings.TrimSpace(method.Business) == "" {
+				name := qualifiedServerBusinessName(binding, method)
+				if _, exists := occupied[name]; exists {
+					name = collisionServerBusinessName(binding, method)
+				}
+				bindings[bindingIndex].Methods[methodIndex].Business = name
+				occupied[name] = struct{}{}
+			}
+		}
+	}
+}
+
+func qualifiedServerBusinessName(binding Binding, method Method) string {
+	prefix := packageBusinessPrefix(binding.Package)
+	if prefix == "" {
+		packageName := strings.Map(func(character rune) rune {
+			if unicode.IsLetter(character) || unicode.IsDigit(character) {
+				return character
+			}
+			return '_'
+		}, binding.GoPackage)
+		prefix = exported(packageName)
+	}
+	if prefix == "" {
+		prefix = "Protocol"
+	}
+	return prefix + binding.Service + method.Name
+}
+
+func collisionServerBusinessName(binding Binding, method Method) string {
+	prefix := packageBusinessPrefix(binding.Package)
+	if prefix == "" {
+		prefix = "Protocol"
+	}
+	digest := sha256.Sum256([]byte(binding.Package))
+	return fmt.Sprintf("%sPath%X%s%s", prefix, digest[:6], binding.Service, method.Name)
+}
+
+func packageBusinessPrefix(packagePath string) string {
+	parts := strings.Split(filepath.ToSlash(packagePath), "/")
+	if len(parts) > 1 && strings.Contains(parts[0], ".") {
+		parts = parts[1:]
+	}
+	var semantic []string
+	lastNormalized := ""
+	for _, part := range parts {
+		switch strings.ToLower(part) {
+		case "api", "gen", "pb", "proto":
+			continue
+		}
+		normalized := strings.Map(func(character rune) rune {
+			if unicode.IsLetter(character) || unicode.IsDigit(character) {
+				return unicode.ToLower(character)
+			}
+			return -1
+		}, part)
+		if part != "" && normalized != lastNormalized {
+			safe := strings.Map(func(character rune) rune {
+				if unicode.IsLetter(character) || unicode.IsDigit(character) {
+					return character
+				}
+				return '_'
+			}, part)
+			semantic = append(semantic, safe)
+			lastNormalized = normalized
+		}
+	}
+	prefix := exported(strings.Join(semantic, "_"))
+	if prefix != "" {
+		first, _ := utf8.DecodeRuneInString(prefix)
+		if unicode.IsDigit(first) {
+			prefix = "P" + prefix
+		}
+	}
+	return prefix
+}
+
+func bindingHasLegacyBusinessNames(binding Binding) bool {
+	for _, method := range binding.Methods {
+		if strings.TrimSpace(method.Business) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func validateLegacyServerMigration(root string, existing Binding) error {
+	if !bindingHasLegacyBusinessNames(existing) {
+		return nil
+	}
+	methods, err := serviceMethodNames(filepath.Join(root, "internal", "service"))
+	if err != nil {
+		return err
+	}
+	for _, method := range existing.Methods {
+		if strings.TrimSpace(method.Business) != "" {
+			continue
+		}
+		name := existing.Service + method.Name
+		if _, exists := methods[name]; exists {
+			return fmt.Errorf("rpc binding: legacy business method Service.%s is still implemented; rename it to Service.%s before running generate", name, qualifiedServerBusinessName(existing, method))
+		}
+	}
+	return nil
+}
+
+func serviceMethodNames(directory string) (map[string]struct{}, error) {
+	set := token.NewFileSet()
+	packages, err := parser.ParseDir(set, directory, func(info os.FileInfo) bool {
+		return !strings.HasSuffix(info.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		return nil, fmt.Errorf("rpc binding: parse service package: %w", err)
+	}
+	methods := make(map[string]struct{})
+	for _, pkg := range packages {
+		for _, file := range pkg.Files {
+			for _, declaration := range file.Decls {
+				function, ok := declaration.(*ast.FuncDecl)
+				if !ok || function.Recv == nil || len(function.Recv.List) != 1 {
+					continue
+				}
+				receiver := function.Recv.List[0].Type
+				if pointer, ok := receiver.(*ast.StarExpr); ok {
+					receiver = pointer.X
+				}
+				if identifier, ok := receiver.(*ast.Ident); ok && identifier.Name == "Service" {
+					methods[function.Name.Name] = struct{}{}
+				}
+			}
+		}
+	}
+	return methods, nil
+}
+
+func bindingOutputsStale(root string) (bool, error) {
+	paths := []struct {
+		path    string
+		marker  string
+		enabled bool
+	}{
+		{path: filepath.Join(root, "internal", "transport", "grpc", "external.gen.go"), marker: "Register", enabled: regularFile(filepath.Join(root, "internal", "transport", "grpc", "register.go"))},
+		{path: filepath.Join(root, "internal", "rpcclient", "clients.gen.go"), marker: "type Clients struct {", enabled: true},
+	}
+	for _, candidate := range paths {
+		if !candidate.enabled {
+			continue
+		}
+		contents, err := os.ReadFile(candidate.path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if strings.Contains(string(contents), candidate.marker) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func reconcileEmptyBindings(root string) (bool, error) {
+	stale, err := bindingOutputsStale(root)
+	if err != nil || !stale {
+		return false, err
+	}
+	paths := []string{"go.mod", "go.sum", filepath.Join("internal", "rpcclient", "clients.gen.go")}
+	hasServer := regularFile(filepath.Join(root, "internal", "transport", "grpc", "register.go"))
+	if hasServer {
+		paths = append(paths, filepath.Join("internal", "transport", "grpc", "external.gen.go"))
+	}
+	err = mutateFiles(root, paths, func() error {
+		if hasServer {
+			if err := writeServer(root, nil); err != nil {
+				return err
+			}
+		}
+		if err := writeClients(root, nil); err != nil {
+			return err
+		}
+		if err := tidy(root); err != nil {
+			return err
+		}
+		return compile(root)
+	})
+	return err == nil, err
 }
 
 func validateClientConfiguration(root string, bindings []Binding) error {
@@ -206,17 +475,21 @@ func Generate(projectRoot string) (bool, error) {
 		return false, err
 	}
 	if len(state.Servers) == 0 && len(state.Clients) == 0 {
-		return false, nil
+		return reconcileEmptyBindings(root)
 	}
 	if len(state.Servers) > 0 && !regularFile(filepath.Join(root, "internal", "transport", "grpc", "register.go")) {
 		return false, errors.New("rpc binding: server bindings require a grpc or mixed project")
 	}
 	resolvedServers := make([]Binding, 0, len(state.Servers))
 	for _, existing := range state.Servers {
+		if err := validateLegacyServerMigration(root, existing); err != nil {
+			return false, err
+		}
 		binding, resolveErr := resolve(root, BindConfig{ModuleSpec: moduleSpec(existing), Package: existing.Package, Service: existing.Service})
 		if resolveErr != nil {
 			return false, resolveErr
 		}
+		preserveServerBusinessNames(&binding, existing)
 		resolvedServers = append(resolvedServers, binding)
 	}
 	resolvedClients := make([]Binding, 0, len(state.Clients))
@@ -229,6 +502,7 @@ func Generate(projectRoot string) (bool, error) {
 		resolvedClients = append(resolvedClients, binding)
 	}
 	state.Servers, state.Clients = resolvedServers, resolvedClients
+	assignServerBusinessNames(state.Servers)
 	if err := validateServerMethodNames(state.Servers); err != nil {
 		return false, err
 	}
@@ -238,7 +512,7 @@ func Generate(projectRoot string) (bool, error) {
 	}
 	for _, binding := range state.Servers {
 		for _, method := range binding.Methods {
-			paths = append(paths, filepath.Join("internal", "service", snake(binding.Service+method.Name)+".go"))
+			paths = append(paths, filepath.Join("internal", "service", snake(serverBusinessName(binding, method))+".go"))
 		}
 	}
 	err = mutateFiles(root, paths, func() error {
@@ -308,10 +582,11 @@ func BindServer(config BindConfig) (Binding, error) {
 	}
 	replaced := false
 	for index, existing := range state.Servers {
-		if existing.Service == binding.Service {
-			if existing.Package != binding.Package {
-				return Binding{}, fmt.Errorf("rpc server: %s is already bound from %s; bind a new protocol package as a distinct Service or unbind it first", binding.Service, existing.Package)
+		if serverBindingKey(existing) == serverBindingKey(binding) {
+			if err := validateLegacyServerMigration(root, existing); err != nil {
+				return Binding{}, err
 			}
+			preserveServerBusinessNames(&binding, existing)
 			state.Servers[index] = binding
 			replaced = true
 			break
@@ -319,6 +594,13 @@ func BindServer(config BindConfig) (Binding, error) {
 	}
 	if !replaced {
 		state.Servers = append(state.Servers, binding)
+	}
+	assignServerBusinessNames(state.Servers)
+	for _, candidate := range state.Servers {
+		if serverBindingKey(candidate) == serverBindingKey(binding) {
+			binding = candidate
+			break
+		}
 	}
 	if err := validateServerMethodNames(state.Servers); err != nil {
 		return Binding{}, err
@@ -330,7 +612,7 @@ func BindServer(config BindConfig) (Binding, error) {
 		filepath.Join("internal", "transport", "grpc", "external.gen.go"),
 	}
 	for _, method := range binding.Methods {
-		paths = append(paths, filepath.Join("internal", "service", snake(binding.Service+method.Name)+".go"))
+		paths = append(paths, filepath.Join("internal", "service", snake(serverBusinessName(binding, method))+".go"))
 	}
 	if err := mutateFiles(root, paths, func() error {
 		if err := addRequirement(root, binding.Module, binding.Version); err != nil {
@@ -449,7 +731,7 @@ func BindClient(config BindConfig) (Binding, error) {
 // AddConfig and AddServer/AddClient are intentionally not retained: v0.4
 // replaces the pre-release add vocabulary with bind.
 
-func UnbindServer(projectRoot, service string) error {
+func UnbindServer(projectRoot, service string, packagePaths ...string) error {
 	root, err := serviceRoot(projectRoot, true)
 	if err != nil {
 		return err
@@ -458,11 +740,26 @@ func UnbindServer(projectRoot, service string) error {
 	if err != nil {
 		return err
 	}
+	packagePath := ""
+	if len(packagePaths) > 0 {
+		packagePath = strings.TrimSpace(packagePaths[0])
+	}
+	if packagePath == "" {
+		matches := 0
+		for _, binding := range state.Servers {
+			if binding.Service == service {
+				matches++
+			}
+		}
+		if matches > 1 {
+			return fmt.Errorf("rpc server: service %q is bound from multiple packages; specify --package", service)
+		}
+	}
 	found := false
 	workspaceBinding := false
 	servers := state.Servers[:0]
 	for _, binding := range state.Servers {
-		if binding.Service == service {
+		if binding.Service == service && (packagePath == "" || binding.Package == packagePath) {
 			found = true
 			workspaceBinding = binding.Version == ""
 			continue
@@ -470,6 +767,9 @@ func UnbindServer(projectRoot, service string) error {
 		servers = append(servers, binding)
 	}
 	if !found {
+		if packagePath != "" {
+			return fmt.Errorf("rpc server: service %q is not bound from %s", service, packagePath)
+		}
 		return fmt.Errorf("rpc server: service %q is not bound", service)
 	}
 	state.Servers = servers
@@ -945,7 +1245,7 @@ func writeServer(root string, bindings []Binding) error {
 		serverType := fmt.Sprintf("%sExternalServer%d", lowerFirst(binding.Service), index)
 		output.WriteString(fmt.Sprintf("type %s struct { %s.Unimplemented%sServer; application *service.Service }\n\n", serverType, alias, binding.Service))
 		for _, method := range binding.Methods {
-			business := binding.Service + method.Name
+			business := serverBusinessName(binding, method)
 			output.WriteString(fmt.Sprintf("func (server *%s) %s(ctx context.Context, request *%s.%s) (*%s.%s, error) {\n", serverType, method.Name, alias, method.Request, alias, method.Response))
 			output.WriteString(fmt.Sprintf("\tresponse, err := server.application.%s(ctx, request)\n\tif err == nil { return response, nil }\n\tvar businessError *jgoerrors.Error\n\tif stderrors.As(err, &businessError) {\n\t\ttrace.SpanFromContext(ctx).SetAttributes(attribute.Int64(\"jgo.business_code\", int64(businessError.Code())), attribute.String(\"jgo.business_message\", businessError.Message()))\n\t\treturn &%s.%s{Code: int32(businessError.Code()), Msg: businessError.Message()}, nil\n\t}\n\treturn nil, err\n}\n\n", business, alias, method.Response))
 		}
@@ -959,8 +1259,15 @@ func writeServer(root string, bindings []Binding) error {
 }
 
 func createServerStubs(root string, binding Binding) error {
+	existing, err := serviceMethodNames(filepath.Join(root, "internal", "service"))
+	if err != nil {
+		return err
+	}
 	for _, method := range binding.Methods {
-		name := binding.Service + method.Name
+		name := serverBusinessName(binding, method)
+		if _, exists := existing[name]; exists {
+			continue
+		}
 		path := filepath.Join(root, "internal", "service", snake(name)+".go")
 		if _, err := os.Stat(path); err == nil {
 			continue
@@ -971,6 +1278,7 @@ func createServerStubs(root string, binding Binding) error {
 		if err := writeGo(path, []byte(contents)); err != nil {
 			return err
 		}
+		existing[name] = struct{}{}
 	}
 	return nil
 }

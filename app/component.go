@@ -11,3 +11,9 @@ type Component interface {
 	Start(context.Context) error
 	Stop(context.Context) error
 }
+
+// StartupNotifier is implemented by components that can report when their
+// startup boundary (for example, binding a listener) has completed.
+type StartupNotifier interface {
+	Started() <-chan struct{}
+}

@@ -12,8 +12,11 @@ import (
 	"{{.Module}}/internal/errcode"
 )
 
-func New(ctx context.Context, configuration config.Config, rpcManager *clientgrpcx.Manager, logger *slog.Logger) (*management.Server, *metrics.Metrics, error) {
+func New(ctx context.Context, configuration config.Config, process readiness.Checker, rpcManager *clientgrpcx.Manager, logger *slog.Logger) (*management.Server, *metrics.Metrics, error) {
 	registry := readiness.New(configuration.Management.Readiness.Timeout.Duration)
+	if process != nil {
+		if err := registry.Add("process", true, process); err != nil { return nil, nil, err }
+	}
 	if configuration.Management.Readiness.Enabled && rpcManager != nil {
 		for name, client := range configuration.RPCClient {
 			clientName := name

@@ -7,6 +7,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 const (
@@ -39,7 +42,6 @@ type Config struct {
 
 var (
 	projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
-	modulePartPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~+-]*$`)
 	versionPattern     = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$`)
 )
 
@@ -54,7 +56,7 @@ func (config *Config) normalizeAndValidate() error {
 	if !projectNamePattern.MatchString(config.Name) || config.Name == "." || config.Name == ".." {
 		return fmt.Errorf("%w: %q", ErrInvalidName, config.Name)
 	}
-	if !validModulePath(config.Module) {
+	if module.CheckPath(config.Module) != nil {
 		return fmt.Errorf("%w: %q", ErrInvalidModule, config.Module)
 	}
 	switch config.Type {
@@ -96,7 +98,7 @@ func (config *Config) normalizeAndValidate() error {
 			return fmt.Errorf("%w: %q is not a directory", ErrInvalidReplace, replacement)
 		}
 		goMod, err := os.ReadFile(filepath.Join(replacement, "go.mod"))
-		if err != nil || !strings.Contains(string(goMod), "module github.com/eyesofblue/jgo") {
+		if err != nil || modfile.ModulePath(goMod) != "github.com/eyesofblue/jgo" {
 			return fmt.Errorf("%w: %q is not the JGO module", ErrInvalidReplace, replacement)
 		}
 		config.JGOReplace = replacement
@@ -132,19 +134,6 @@ func NormalizeGoVersion(version string) (string, error) {
 		return "", fmt.Errorf("%w: require Go %s or newer, got %s", ErrInvalidGoVersion, MinimumGoVersion, version)
 	}
 	return fmt.Sprintf("%d.%d.%d", values[0], values[1], values[2]), nil
-}
-
-func validModulePath(module string) bool {
-	if module == "" || strings.ContainsAny(module, " \t\r\n\\") {
-		return false
-	}
-	parts := strings.Split(module, "/")
-	for _, part := range parts {
-		if part == "" || part == "." || part == ".." || !modulePartPattern.MatchString(part) {
-			return false
-		}
-	}
-	return true
 }
 
 func packageName(name string) string {
