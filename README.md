@@ -12,7 +12,7 @@ Runtime support, project scaffolding, contract generation, unified debugging, an
 github.com/eyesofblue/jgo
 ```
 
-The first release line is `v0.1.x`; see [CHANGELOG.md](CHANGELOG.md).
+The current release is `v0.2.0`; see [CHANGELOG.md](CHANGELOG.md).
 
 ## Prerequisites
 
@@ -35,9 +35,11 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 Install a published version:
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@latest
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.2.0
 jgo --version
 ```
+
+Use `@latest` when you intentionally want the newest published release.
 
 For JGO framework development, you can also clone the repository and build from source:
 

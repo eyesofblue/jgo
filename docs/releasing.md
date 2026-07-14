@@ -2,7 +2,7 @@
 
 JGO 使用 Semantic Versioning，Git tag 使用 `vMAJOR.MINOR.PATCH`。
 
-`v0.1.0` 已发布。后续版本在维护者实际创建 tag 前，CHANGELOG 中保持 `Unreleased`，不得提前宣称已经发布。
+当前发布版本为 `v0.2.0`（2026-07-14）。后续版本在维护者实际创建 tag 前，CHANGELOG 中保持 `Unreleased`，不得提前宣称已经发布。
 
 - `MAJOR`：稳定版之后的不兼容公开 API 变更。
 - `MINOR`：向后兼容的新能力；在 `v0` 阶段也用于明确的接口演进。

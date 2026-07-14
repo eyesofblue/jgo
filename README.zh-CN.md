@@ -12,7 +12,7 @@ JGO 是一个可独立使用的 Go 服务框架和项目脚手架，支持 HTTP/
 github.com/eyesofblue/jgo
 ```
 
-首个版本系列为 `v0.1.x`，版本能力见 [CHANGELOG.md](CHANGELOG.md)。
+当前发布版本为 `v0.2.0`，版本能力见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 前置依赖
 
@@ -35,9 +35,11 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 安装已经发布的版本：
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@latest
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.2.0
 jgo --version
 ```
+
+需要始终安装最新发布版本时，可以把版本改为 `@latest`。
 
 参与 JGO 框架开发时，也可以克隆仓库后从源码构建：
 

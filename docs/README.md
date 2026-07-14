@@ -17,6 +17,7 @@ JGO 是一个不依赖私有基础设施的 Go 服务框架和脚手架，支持
 
 ## 核心约定
 
+- 当前版本：`v0.2.0`（2026-07-14）
 - Module：`github.com/eyesofblue/jgo`
 - 最低 Go：`1.24.0`
 - HTTP：RPC 风格路径，复杂入参和返回值使用 Go struct。

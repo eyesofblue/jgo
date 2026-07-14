@@ -2,7 +2,7 @@
 
 All notable JGO changes are documented here. JGO follows Semantic Versioning.
 
-## v0.2.0 - Unreleased
+## v0.2.0 - 2026-07-14
 
 ### Changed
 
@@ -19,7 +19,7 @@ All notable JGO changes are documented here. JGO follows Semantic Versioning.
 - `jgo tools install` and `jgo tools check` for locked protobuf tool installation and diagnostics without implicit Go toolchain switching.
 - `--skip-tidy` for explicitly creating projects in offline environments.
 - Mandatory cross-file validation that blocks generation when any RPC response does not follow the JGO response convention.
-- Cross-file protobuf response validation and precise newly-created service stub reporting.
+- Precise reporting of newly created service stubs and methods after generation.
 
 ### Compatibility
 

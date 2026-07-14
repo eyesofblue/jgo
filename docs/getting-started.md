@@ -10,14 +10,14 @@ JGO 的 Go module 是 `github.com/eyesofblue/jgo`，最低支持 Go 1.24.0。
 go version # 需要 Go 1.24.0 或更高版本
 ```
 
-版本发布后可使用：
+安装当前发布版本：
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@latest
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.2.0
 jgo --version
 ```
 
-确保 `$(go env GOPATH)/bin` 已加入 `PATH`。如果首个版本尚未发布，请在 JGO 仓库中构建：
+需要跟随最新发布版本时可以使用 `@latest`。确保 `$(go env GOPATH)/bin` 已加入 `PATH`。参与框架开发时可以在 JGO 仓库中构建：
 
 ```bash
 go build -trimpath -o bin/jgo ./cmd/jgo
@@ -35,7 +35,7 @@ jgo new user-service \
 cd user-service
 ```
 
-`--type` 支持 `web`、`grpc` 和 `mixed`。默认采用当前 `go env GOVERSION`，可以通过 `--go-version` 指定；创建过程会自动执行 `go mod tidy` 并生成 `go.sum`，离线环境可以使用 `--skip-tidy`。在尚未发布 JGO module 时，增加：
+`--type` 支持 `web`、`grpc` 和 `mixed`。默认采用当前 `go env GOVERSION`，可以通过 `--go-version` 指定；创建过程会自动执行 `go mod tidy` 并生成 `go.sum`，离线环境可以使用 `--skip-tidy`。本地开发 JGO 源码时可以增加：
 
 ```bash
 --jgo-replace /absolute/path/to/jgo

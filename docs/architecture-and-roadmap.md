@@ -1,6 +1,6 @@
 # JGO 架构设计与实施路线
 
-> 状态：`v0.1.0` 已发布，`v0.2.0` P0/P1 改造已完成，等待发布验收
+> 状态：`v0.2.0` 已于 2026-07-14 发布，P0/P1 已完成
 > Go module：`github.com/eyesofblue/jgo`  
 > 最低 Go 版本：`1.24`
 > License：`Apache-2.0`  
@@ -1059,3 +1059,9 @@ jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 - 生成 unary transport 将显式 `jgo/errors.Error` 转换为 gRPC `OK` 的 Response `code/msg`；panic、未知错误、取消和超时继续使用非 `OK` status。
 - Response 标准检查改用完整 protobuf descriptor，覆盖跨文件和 import 场景。
 - generate 输出本次新建的业务文件以及需要实现的 `Service.<Method>`。
+
+### 2026-07-14：v0.2.0 发布
+
+- 发布提交完成全仓 test、race、vet、格式化、CLI 构建及 web/grpc/mixed 真实生成验收。
+- 创建 annotated tag `v0.2.0`，由 GitHub Actions 生成 Linux/macOS 的 amd64/arm64 归档和 SHA-256 校验文件。
+- README、快速入门、依赖说明、命令参考、实施知识库和 CHANGELOG 已同步到 `v0.2.0`。
