@@ -1,0 +1,145 @@
+// Package config loads generated service configuration from defaults, YAML,
+// environment variables, and command-line flags.
+package config
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+const defaultPath = "configs/local.yaml"
+
+// Duration is a YAML-friendly time.Duration.
+type Duration struct {
+	time.Duration
+}
+
+// UnmarshalText parses values such as 3s or 500ms.
+func (duration *Duration) UnmarshalText(text []byte) error {
+	value, err := time.ParseDuration(strings.TrimSpace(string(text)))
+	if err != nil {
+		return err
+	}
+	duration.Duration = value
+	return nil
+}
+
+// Config is the generated service configuration.
+type Config struct {
+	Service Service `yaml:"service"`
+}
+
+// Service contains process-level server settings.
+type Service struct {
+	Name            string   `yaml:"name"`
+	HTTPAddress     string   `yaml:"http_address"`
+	GRPCAddress     string   `yaml:"grpc_address"`
+	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
+}
+
+// Load applies flag > environment > YAML > default precedence.
+func Load(arguments []string) (Config, error) {
+	config := Config{Service: Service{
+		Name:            "{{.Name}}",
+		HTTPAddress:     ":8080",
+		GRPCAddress:     ":9090",
+		ShutdownTimeout: Duration{Duration: 10 * time.Second},
+	}}
+
+	set := flag.NewFlagSet("{{.Name}}", flag.ContinueOnError)
+	set.SetOutput(io.Discard)
+	path := set.String("config", envOr("JGO_CONFIG", defaultPath), "configuration YAML path")
+	serviceName := set.String("service-name", "", "override service name")
+	httpAddress := set.String("http-address", "", "override HTTP listen address")
+	grpcAddress := set.String("grpc-address", "", "override gRPC listen address")
+	shutdownTimeout := set.String("shutdown-timeout", "", "override graceful shutdown timeout")
+	if err := set.Parse(arguments); err != nil {
+		return Config{}, fmt.Errorf("config: parse flags: %w", err)
+	}
+	if set.NArg() != 0 {
+		return Config{}, fmt.Errorf("config: unexpected arguments: %s", strings.Join(set.Args(), " "))
+	}
+
+	contents, err := os.ReadFile(*path)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: read %s: %w", *path, err)
+	}
+	if err := yaml.Unmarshal(contents, &config); err != nil {
+		return Config{}, fmt.Errorf("config: decode %s: %w", *path, err)
+	}
+
+	if err := applyEnvironment(&config); err != nil {
+		return Config{}, err
+	}
+	if *serviceName != "" {
+		config.Service.Name = *serviceName
+	}
+	if *httpAddress != "" {
+		config.Service.HTTPAddress = *httpAddress
+	}
+	if *grpcAddress != "" {
+		config.Service.GRPCAddress = *grpcAddress
+	}
+	if *shutdownTimeout != "" {
+		value, err := time.ParseDuration(*shutdownTimeout)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: --shutdown-timeout: %w", err)
+		}
+		config.Service.ShutdownTimeout.Duration = value
+	}
+	if err := config.Validate(); err != nil {
+		return Config{}, err
+	}
+	return config, nil
+}
+
+// Validate rejects configuration that cannot safely start a service.
+func (config Config) Validate() error {
+	if strings.TrimSpace(config.Service.Name) == "" {
+		return errors.New("config: service.name is required")
+	}
+	if strings.TrimSpace(config.Service.HTTPAddress) == "" {
+		return errors.New("config: service.http_address is required")
+	}
+	if strings.TrimSpace(config.Service.GRPCAddress) == "" {
+		return errors.New("config: service.grpc_address is required")
+	}
+	if config.Service.ShutdownTimeout.Duration <= 0 {
+		return errors.New("config: service.shutdown_timeout must be positive")
+	}
+	return nil
+}
+
+func applyEnvironment(config *Config) error {
+	if value := os.Getenv("JGO_SERVICE_NAME"); value != "" {
+		config.Service.Name = value
+	}
+	if value := os.Getenv("JGO_HTTP_ADDRESS"); value != "" {
+		config.Service.HTTPAddress = value
+	}
+	if value := os.Getenv("JGO_GRPC_ADDRESS"); value != "" {
+		config.Service.GRPCAddress = value
+	}
+	if value := os.Getenv("JGO_SHUTDOWN_TIMEOUT"); value != "" {
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("config: JGO_SHUTDOWN_TIMEOUT: %w", err)
+		}
+		config.Service.ShutdownTimeout.Duration = duration
+	}
+	return nil
+}
+
+func envOr(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}

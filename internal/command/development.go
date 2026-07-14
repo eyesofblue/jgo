@@ -12,6 +12,7 @@ import (
 
 	callruntime "github.com/eyesofblue/jgo/internal/call"
 	openapigen "github.com/eyesofblue/jgo/internal/generator/openapi"
+	projectgen "github.com/eyesofblue/jgo/internal/generator/project"
 	protobufgen "github.com/eyesofblue/jgo/internal/generator/protobuf"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/modfile"
@@ -93,6 +94,7 @@ func newRunCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			process := exec.CommandContext(command.Context(), "go", arguments...)
 			process.Dir = project.root
+			process.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 			process.Stdin = os.Stdin
 			process.Stdout = stdout
 			process.Stderr = stderr
@@ -135,6 +137,7 @@ func newBuildCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			process := exec.CommandContext(command.Context(), "go", "build", "-trimpath", "-o", output, "./cmd/server")
 			process.Dir = project.root
+			process.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 			process.Stdout = stdout
 			process.Stderr = stderr
 			if err := process.Run(); err != nil {
@@ -159,7 +162,7 @@ func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
 	var checks []doctorCheck
 	project, projectErr := inspectProject(root)
 	checks = append(checks, doctorCheck{name: "project", err: projectErr})
-	checks = append(checks, doctorCheck{name: "Go >= 1.22.0", err: checkGoVersion(ctx, root)})
+	checks = append(checks, doctorCheck{name: "Go >= " + projectgen.MinimumGoVersion, err: checkGoVersion(ctx, root)})
 	if projectErr == nil {
 		checks = append(checks, doctorCheck{name: "JGO module dependency", err: checkJGOModule(project.root)})
 		if project.hasWeb {
@@ -169,7 +172,7 @@ func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
 		if project.hasGRPC {
 			_, err := callruntime.ListGRPC(ctx, project.root)
 			checks = append(checks, doctorCheck{name: "protobuf contract", err: err})
-			checks = append(checks, doctorCheck{name: "Buf toolchain", err: protobufgen.CheckTools(project.root)})
+			checks = append(checks, lockedToolDoctorChecks(ctx)...)
 		}
 	}
 	failures := 0
@@ -223,6 +226,7 @@ func regularFile(path string) bool {
 func checkGoVersion(ctx context.Context, root string) error {
 	command := exec.CommandContext(ctx, "go", "env", "GOVERSION")
 	command.Dir = root
+	command.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 	output, err := command.Output()
 	if err != nil {
 		return fmt.Errorf("run go env GOVERSION: %w", err)
@@ -232,8 +236,8 @@ func checkGoVersion(ctx context.Context, root string) error {
 	if err != nil {
 		return err
 	}
-	if major < 1 || (major == 1 && minor < 22) {
-		return fmt.Errorf("require Go 1.22.0 or newer, got %s", version)
+	if major < 1 || (major == 1 && minor < 24) {
+		return fmt.Errorf("require Go %s or newer, got %s", projectgen.MinimumGoVersion, version)
 	}
 	_ = patch
 	return nil

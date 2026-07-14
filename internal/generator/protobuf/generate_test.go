@@ -113,7 +113,7 @@ func generatedProjectRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		"go.mod":                      "module example.com/demo\n\ngo 1.22.0\n",
+		"go.mod":                      "module example.com/demo\n\ngo 1.24.0\n",
 		"buf.yaml":                    "version: v2\nmodules:\n  - path: api/proto\n",
 		"buf.gen.yaml":                "version: v2\nplugins: []\n",
 		"internal/service/service.go": "package service\n\ntype Service struct{}\n\n// GetUser simulates an HTTP operation with the same name as the RPC.\nfunc (s *Service) GetUser() {}\n",

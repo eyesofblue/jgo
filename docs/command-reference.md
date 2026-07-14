@@ -19,13 +19,28 @@ jgo new <project-name> \
   --type <web|grpc|mixed> \
   [--output <directory>] \
   [--jgo-version <version>] \
+  [--go-version <version>] \
+  [--skip-tidy] \
   [--jgo-replace <absolute-local-path>]
 ```
 
 - `--module`、`--type` 必填。
 - `--output/-o` 默认为项目名。
-- `--jgo-version` 默认 `v0.1.0`。
+- `--jgo-version` 默认 `v0.2.0`。
+- `--go-version` 默认取当前 `go env GOVERSION`，最低为 `1.24.0`。
+- 默认执行 `go mod tidy` 并生成 `go.sum`；`--skip-tidy` 仅用于离线或受控环境。
 - `--jgo-replace` 仅用于 JGO 本地源码联调。
+
+## protobuf 工具链
+
+```bash
+jgo tools install
+jgo tools check
+```
+
+- `tools install` 使用当前 Go 环境安装锁定版本的 Buf 和 protobuf 插件，并设置 `GOTOOLCHAIN=local`。
+- `tools check` 只读检查工具路径、版本、构建 Go 版本和可执行性。
+- `doctor` 会在 gRPC/mixed 项目中复用同一套检查。
 
 ## HTTP/OpenAPI
 
@@ -63,7 +78,7 @@ jgo rpc add <rpc-name> \
 jgo rpc generate [--root <project>]
 ```
 
-`rpc add` 创建空 request/response message；随后在 `.proto` 中编辑字段，再执行生成。`rpc generate` 使用锁定的 Buf 工具链，覆盖生成代码，但不会覆盖已存在的业务方法。生成的业务方法按 `<Service><RPC>` 命名，例如 `GreeterService.GetUser` 对应 `Service.GreeterServiceGetUser`，以避免 mixed 项目协议间的方法冲突。
+`rpc add` 创建空 request/response message；随后在 `.proto` 中编辑字段，再执行生成。`rpc generate` 使用锁定的 Buf 工具链，覆盖生成代码，但不会覆盖已存在的业务方法。生成的业务方法按 `<Service><RPC>` 命名，例如 `UserService.GetUser` 对应 `Service.UserServiceGetUser`，以避免 mixed 项目协议间的方法冲突。
 
 ## 统一开发流程
 
@@ -80,6 +95,8 @@ jgo build [--root <project>] [--output <binary>]
 - `list` 从本地 OpenAPI 和 protobuf 契约列出接口。
 - `run` 执行 `go run ./cmd/server`，额外位置参数透传给服务程序。
 - `build` 默认输出 `bin/<项目目录名>`，`--output/-o` 可覆盖。
+
+生成项目的服务程序支持 `--config`、`--service-name`、`--http-address`、`--grpc-address` 和 `--shutdown-timeout`。配置优先级为命令参数、环境变量、YAML、默认值。
 
 ## 调试调用
 

@@ -18,8 +18,8 @@ github.com/eyesofblue/jgo
 
 | 项目类型 | 必需软件 |
 | --- | --- |
-| `web` | Go `1.22.0` 或更高版本 |
-| `grpc` | Go `1.22.0` 或更高版本、Buf `1.46.0`、`protoc-gen-go` `1.36.7`、`protoc-gen-go-grpc` `1.5.1` |
+| `web` | Go `1.24.0` 或更高版本 |
+| `grpc` | Go `1.24.0` 或更高版本、Buf `1.46.0`、`protoc-gen-go` `1.36.7`、`protoc-gen-go-grpc` `1.5.1` |
 | `mixed` | 与 `grpc` 相同的 Go 和 protobuf 工具链 |
 
 JGO 不强制依赖数据库、Redis、消息队列、服务注册中心、配置中心或其他私有基础设施。后续可以通过应用组件和 HTTP/gRPC 中间件接入私有基础设施。
@@ -46,18 +46,18 @@ go build -trimpath -o bin/jgo ./cmd/jgo
 ./bin/jgo --version
 ```
 
-gRPC 和 mixed 项目还需要安装锁定版本的生成工具。在 JGO 仓库或生成的项目中执行：
+gRPC 和 mixed 项目还需要安装锁定版本的生成工具。每个 Go 开发环境执行一次：
 
 ```bash
-make tools
-command -v buf protoc-gen-go protoc-gen-go-grpc
+jgo tools install
+jgo tools check
 ```
 
-JGO 不会静默安装这些工具。完整 module 依赖和工具版本见[依赖说明](docs/dependencies.md)。
+JGO 使用 `GOTOOLCHAIN=local`，不会静默下载或切换 Go 工具链。完整 module 依赖和工具版本见[依赖说明](docs/dependencies.md)。
 
 ## 新项目：创建服务和首个接口
 
-生成的项目默认依赖 `github.com/eyesofblue/jgo v0.1.0`。开发和联调 JGO 本身时，可以增加 `--jgo-replace /absolute/path/to/jgo`；正常使用时不要提交包含本机路径的 `replace`。
+生成的项目默认依赖 `github.com/eyesofblue/jgo v0.2.0`，默认采用当前 `go env GOVERSION`，也可以用 `--go-version` 显式指定。创建过程会执行 `go mod tidy` 并生成 `go.sum`；离线环境可使用 `--skip-tidy`。开发和联调 JGO 本身时，可以增加 `--jgo-replace /absolute/path/to/jgo`；正常使用时不要提交包含本机路径的 `replace`。
 
 ### Web 服务
 
@@ -94,7 +94,7 @@ HTTP 响应统一使用 `{"code":0,"msg":"","data":...}`：
 
 ### gRPC 服务
 
-`make tools` 把锁定版本的 Buf 和 protobuf 插件安装到当前 Go 开发环境；同一环境中只需安装一次，不需要每个项目都执行：
+`jgo tools install` 把锁定版本的 Buf 和 protobuf 插件安装到当前 Go 开发环境；同一环境中只需安装一次，不需要每个项目都执行：
 
 ```bash
 jgo new user-rpc \
@@ -102,19 +102,19 @@ jgo new user-rpc \
   --type grpc
 cd user-rpc
 
-make tools       # 当前开发环境首次使用 JGO gRPC 时执行
+jgo tools install # 当前开发环境首次使用 JGO gRPC 时执行
 jgo doctor
-jgo rpc add GetUser --service GreeterService
+jgo rpc add GetUser --service UserRpcService
 # 编辑 api/proto/ 下的 GetUserRequest 和 GetUserResponse message 字段。
 jgo rpc generate
-# 实现 internal/service/ 中新生成的 GreeterServiceGetUser 方法。
+# 实现 internal/service/ 中新生成的 UserRpcServiceGetUser 方法。
 go test ./...
 jgo run
 ```
 
-新 gRPC 项目的 proto 自带 `GreeterService.Echo` 示例，可以保留或在形成正式契约时删除。gRPC Health 服务始终注册，业务服务默认监听 `:9090`。
+新 gRPC 项目的 service 名根据项目名生成；例如 `user-rpc` 对应 `UserRpcService`，并自带 `Echo` 示例。示例可以保留或在形成正式契约时删除。gRPC Health 服务始终注册，默认地址从 `configs/local.yaml` 读取。
 
-JGO 锁定 Buf `1.46.0`、`protoc-gen-go` `1.36.7` 和 `protoc-gen-go-grpc` `1.5.1`，均兼容 Go 1.22.0 最低版本。gRPC 业务方法使用 `<Service><RPC>` 命名，例如 `GreeterServiceGetUser`；对外 protobuf service 和 RPC 名称保持不变。
+JGO 锁定 Buf `1.46.0`、`protoc-gen-go` `1.36.7` 和 `protoc-gen-go-grpc` `1.5.1`。gRPC 业务方法使用 `<Service><RPC>` 命名，例如 `UserRpcServiceGetUser`；对外 protobuf service 和 RPC 名称保持不变。
 
 ### mixed 服务
 
@@ -126,7 +126,7 @@ jgo new user-service \
   --type mixed
 cd user-service
 
-make tools       # 已在当前环境安装过时可跳过
+jgo tools install # 已在当前环境安装过时可跳过
 jgo doctor
 # 按上面的 Web/gRPC 流程增加所需接口并完善 struct/proto。
 jgo generate     # 同时生成 HTTP 和 gRPC 代码
@@ -134,7 +134,7 @@ go test ./...
 jgo run
 ```
 
-mixed 项目默认同时监听 HTTP `:8080` 和 gRPC `:9090`。
+mixed 项目默认同时监听 HTTP `:8080` 和 gRPC `:9090`，地址可以通过 YAML、环境变量或命令参数覆盖。
 
 ## 存量服务：新增接口
 
@@ -157,14 +157,14 @@ go test ./...
 
 ### 新增 gRPC 接口
 
-假设存量 `GreeterService` 已有多个 RPC，现在新增 `GetUser`：
+假设存量 `UserService` 已有多个 RPC，现在新增 `GetUser`：
 
 ```bash
 jgo doctor       # 检查当前环境中的锁定工具版本
-jgo rpc add GetUser --service GreeterService
+jgo rpc add GetUser --service UserService
 # 编辑对应 .proto 中的 GetUserRequest/GetUserResponse 字段。
 jgo rpc generate
-# 实现新生成的 GreeterServiceGetUser 方法。
+# 实现新生成的 UserServiceGetUser 方法。
 go test ./...
 ```
 
@@ -185,7 +185,7 @@ HTTP 和 gRPC 使用相同的 JSON 输入方式。JGO 读取 OpenAPI 或 protobu
 ```bash
 jgo list
 jgo call http GetUser --addr http://127.0.0.1:8080 --data '{"uid":12345}'
-jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hello"}'
+jgo call grpc UserRpcService.Echo --addr 127.0.0.1:9090 --data '{"message":"hello"}'
 ```
 
 两种调用命令都支持可重复的 `--header 'Name: Value'` 和 `--timeout`。gRPC 优先使用服务端 Reflection，失败时自动读取 `api/proto/` 下的本地 protobuf 文件。

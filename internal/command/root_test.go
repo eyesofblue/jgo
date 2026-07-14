@@ -32,6 +32,9 @@ func TestNewCommandCreatesProject(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(target, "cmd", "server", "main.go")); err != nil {
 		t.Fatalf("generated main: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(target, "go.sum")); err != nil {
+		t.Fatalf("generated go.sum: %v", err)
+	}
 }
 
 func TestNewCommandRequiresModuleAndType(t *testing.T) {
@@ -39,6 +42,25 @@ func TestNewCommandRequiresModuleAndType(t *testing.T) {
 	err := Execute(&output, &output, []string{"new", "demo"})
 	if err == nil || !strings.Contains(err.Error(), "required flag") {
 		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
+func TestNewCommandCanSkipTidy(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "offline")
+	var output bytes.Buffer
+	err := Execute(&output, &output, []string{
+		"new", "offline", "--module", "example.com/offline", "--type", "web",
+		"--output", target, "--go-version", "1.24.0", "--skip-tidy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "go.sum")); !os.IsNotExist(err) {
+		t.Fatalf("go.sum exists with --skip-tidy: %v", err)
+	}
+	contents, err := os.ReadFile(filepath.Join(target, "go.mod"))
+	if err != nil || !strings.Contains(string(contents), "go 1.24.0") {
+		t.Fatalf("go.mod = %q, %v", contents, err)
 	}
 }
 
@@ -162,7 +184,7 @@ func TestRootExposesDeveloperCommandsCompletionAndVersion(t *testing.T) {
 	if err := Execute(&output, &output, []string{"--help"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"build", "completion", "doctor", "generate", "run"} {
+	for _, command := range []string{"build", "completion", "doctor", "generate", "run", "tools"} {
 		if !strings.Contains(output.String(), command) {
 			t.Fatalf("root help does not contain %q:\n%s", command, output.String())
 		}

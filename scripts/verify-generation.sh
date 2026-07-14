@@ -7,7 +7,7 @@ trap 'rm -rf "${temporary_root}"' EXIT
 
 for tool in go buf protoc-gen-go protoc-gen-go-grpc shasum; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
-    echo "required tool not found: ${tool}; install the locked protobuf tools with 'make tools'" >&2
+    echo "required tool not found: ${tool}; run 'jgo tools install'" >&2
     exit 1
   fi
 done
@@ -19,7 +19,6 @@ snapshot() {
   local project_root="$1"
   find "${project_root}" -type f \
     -not -path '*/bin/*' \
-    -not -name go.sum \
     -exec shasum -a 256 {} \; | sort | shasum -a 256
 }
 
@@ -32,6 +31,8 @@ for project_type in web grpc mixed; do
     --type "${project_type}" \
     --output "${project_root}" \
     --jgo-replace "${repository_root}"
+
+  test -f "${project_root}/go.sum"
 
   if [[ "${project_type}" == "web" || "${project_type}" == "mixed" ]]; then
     cp "${repository_root}/scripts/testdata/http_models.go" "${project_root}/api/http/model/user.go"
@@ -56,8 +57,13 @@ for project_type in web grpc mixed; do
   fi
 
   if [[ "${project_type}" == "grpc" || "${project_type}" == "mixed" ]]; then
+    if [[ "${project_type}" == "grpc" ]]; then
+      service_name="DemoGrpcService"
+    else
+      service_name="DemoMixedService"
+    fi
     "${temporary_root}/jgo" rpc add GetUser \
-      --service GreeterService \
+      --service "${service_name}" \
       --root "${project_root}"
   fi
 
@@ -71,7 +77,6 @@ for project_type in web grpc mixed; do
 
   (
     cd "${project_root}"
-    go mod tidy
     go test ./...
     go build ./...
   )

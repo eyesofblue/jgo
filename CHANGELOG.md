@@ -2,7 +2,29 @@
 
 All notable JGO changes are documented here. JGO follows Semantic Versioning.
 
-## v0.1.0 - Unreleased
+## v0.2.0 - Unreleased
+
+### Changed
+
+- Raised the minimum Go version to 1.24.0 so macOS binaries contain Mach-O `LC_UUID` metadata without external linking.
+- Generated projects default to the active Go version, support `--go-version`, run `go mod tidy` transactionally, and include `go.sum` immediately.
+- Initial protobuf service names are derived from the project name instead of always using `GreeterService`.
+- Generated server entrypoints load addresses and shutdown timeout from YAML, environment variables, or command-line flags.
+
+### Added
+
+- `jgo tools install` and `jgo tools check` for locked protobuf tool installation and diagnostics without implicit Go toolchain switching.
+- `--skip-tidy` for explicitly creating projects in offline environments.
+
+### Compatibility
+
+- Module: `github.com/eyesofblue/jgo`
+- Minimum Go version: `1.24.0`
+- Buf: `1.46.0`
+- `protoc-gen-go`: `1.36.7`
+- `protoc-gen-go-grpc`: `1.5.1`
+
+## v0.1.0 - 2026-07-13
 
 First public framework release candidate.
 

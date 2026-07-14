@@ -1,8 +1,9 @@
 module {{.Module}}
 
-go 1.22.0
+go {{.GoVersion}}
 
 require github.com/eyesofblue/jgo {{.JGOVersion}}
+require gopkg.in/yaml.v3 v3.0.1
 {{if .HasWeb}}
 require github.com/oapi-codegen/runtime v1.1.1
 {{end}}

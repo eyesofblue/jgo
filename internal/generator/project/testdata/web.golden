@@ -6,6 +6,9 @@ api/http/openapi.yaml
 cmd/server/main.go
 configs/local.yaml
 go.mod
+internal/config/config.go
+internal/config/config_test.go
 internal/service/service.go
+internal/tooldeps/deps.go
 internal/transport/http/routes.gen.go
 internal/transport/http/routes.go

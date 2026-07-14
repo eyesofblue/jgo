@@ -6,6 +6,7 @@ import (
 	"go/format"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -56,6 +57,11 @@ func Generate(input Config) (string, error) {
 	if err := validateGenerated(temporary, config); err != nil {
 		return "", err
 	}
+	if !config.SkipTidy {
+		if err := tidyGenerated(temporary); err != nil {
+			return "", err
+		}
+	}
 
 	if targetWasEmpty {
 		if err := os.Remove(config.TargetDir); err != nil {
@@ -69,6 +75,25 @@ func Generate(input Config) (string, error) {
 		return "", fmt.Errorf("commit generated project: %w", err)
 	}
 	return config.TargetDir, nil
+}
+
+func tidyGenerated(root string) error {
+	command := exec.Command("go", "mod", "tidy")
+	command.Dir = root
+	command.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOWORK=off")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message != "" {
+			return fmt.Errorf("%w: %v: %s; retry after fixing the environment or use --skip-tidy", ErrTidyFailed, err, message)
+		}
+		return fmt.Errorf("%w: %v; retry after fixing the environment or use --skip-tidy", ErrTidyFailed, err)
+	}
+	info, err := os.Stat(filepath.Join(root, "go.sum"))
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: go.sum was not generated", ErrTidyFailed)
+	}
+	return nil
 }
 
 func inspectTarget(target string) (wasEmpty bool, err error) {
@@ -150,7 +175,7 @@ func render(name string, contents []byte, config Config) ([]byte, error) {
 }
 
 func validateGenerated(root string, config Config) error {
-	required := []string{"go.mod", "README.md", "Makefile", "cmd/server/main.go", "internal/service/service.go"}
+	required := []string{"go.mod", "README.md", "Makefile", "cmd/server/main.go", "internal/config/config.go", "internal/service/service.go", "internal/tooldeps/deps.go", "configs/local.yaml"}
 	if config.HasWeb() {
 		required = append(required, "api/http/openapi.yaml", "internal/transport/http/routes.go")
 	}

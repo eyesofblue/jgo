@@ -5,29 +5,33 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/eyesofblue/jgo/app"
 	"github.com/eyesofblue/jgo/server/grpcx"
 	"github.com/eyesofblue/jgo/server/httpx"
+	"{{.Module}}/internal/config"
 	"{{.Module}}/internal/service"
 	grpctransport "{{.Module}}/internal/transport/grpc"
 	httptransport "{{.Module}}/internal/transport/http"
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args[1:]); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(arguments []string) error {
+	configuration, err := config.Load(arguments)
+	if err != nil {
+		return err
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	applicationService := service.New()
 
 	httpServer, err := httpx.New(
-		httpx.WithAddress(":8080"),
+		httpx.WithAddress(configuration.Service.HTTPAddress),
 		httpx.WithLogger(logger),
 		httpx.WithHandler(httptransport.NewHandler(applicationService)),
 	)
@@ -35,7 +39,7 @@ func run() error {
 		return err
 	}
 	grpcServer, err := grpcx.New(
-		grpcx.WithAddress(":9090"),
+		grpcx.WithAddress(configuration.Service.GRPCAddress),
 		grpcx.WithLogger(logger),
 		grpcx.WithReflection(true),
 		grpcx.WithRegister(grpctransport.Register(applicationService)),
@@ -45,8 +49,8 @@ func run() error {
 	}
 
 	application := app.New(
-		app.WithName("{{.Name}}"),
-		app.WithShutdownTimeout(10*time.Second),
+		app.WithName(configuration.Service.Name),
+		app.WithShutdownTimeout(configuration.Service.ShutdownTimeout.Duration),
 	)
 	if err := application.Add(httpServer); err != nil {
 		return err

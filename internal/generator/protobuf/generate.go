@@ -20,13 +20,41 @@ import (
 )
 
 const (
-	// BufVersion is the newest Buf release compatible with JGO's Go 1.22.0 baseline.
+	// BufVersion is the Buf release verified by JGO's real generation tests.
 	BufVersion = "1.46.0"
 	// ProtocGenGoVersion is the protobuf Go generator version locked by JGO.
 	ProtocGenGoVersion = "1.36.7"
 	// ProtocGenGoGRPCVersion is the gRPC Go generator version locked by JGO.
 	ProtocGenGoGRPCVersion = "1.5.1"
 )
+
+// Tool describes one executable in JGO's locked protobuf toolchain.
+type Tool struct {
+	Name          string
+	Package       string
+	Version       string
+	VersionPrefix string
+}
+
+// LockedTools returns a copy of the protobuf tools required by JGO.
+func LockedTools() []Tool {
+	return []Tool{
+		{Name: "buf", Package: "github.com/bufbuild/buf/cmd/buf", Version: BufVersion},
+		{Name: "protoc-gen-go", Package: "google.golang.org/protobuf/cmd/protoc-gen-go", Version: ProtocGenGoVersion, VersionPrefix: "v"},
+		{Name: "protoc-gen-go-grpc", Package: "google.golang.org/grpc/cmd/protoc-gen-go-grpc", Version: ProtocGenGoGRPCVersion},
+	}
+}
+
+// Matches reports whether version output identifies the locked tool version.
+func (tool Tool) Matches(output string) bool {
+	want := tool.VersionPrefix + tool.Version
+	for _, field := range strings.Fields(output) {
+		if strings.TrimSpace(field) == want {
+			return true
+		}
+	}
+	return false
+}
 
 type runner interface {
 	Run(context.Context, string, string, ...string) (string, error)
@@ -40,7 +68,7 @@ func (execRunner) Run(ctx context.Context, directory, name string, arguments ...
 	output, err := command.CombinedOutput()
 	if err != nil {
 		if errorsIsExecutableMissing(err) {
-			return "", fmt.Errorf("protobuf: %s is not installed; install JGO's locked tools with `make tools`", name)
+			return "", fmt.Errorf("protobuf: %s is not installed; run `jgo tools install`", name)
 		}
 		return string(output), fmt.Errorf("protobuf: %s %s: %w: %s", name, strings.Join(arguments, " "), err, strings.TrimSpace(string(output)))
 	}
@@ -103,39 +131,16 @@ func generate(ctx context.Context, root string, commands runner) error {
 }
 
 func checkTools(ctx context.Context, root string, commands runner) error {
-	tools := []struct {
-		name    string
-		version string
-		prefix  string
-	}{
-		{name: "buf", version: BufVersion, prefix: ""},
-		{name: "protoc-gen-go", version: ProtocGenGoVersion, prefix: "v"},
-		{name: "protoc-gen-go-grpc", version: ProtocGenGoGRPCVersion, prefix: ""},
-	}
-	for _, tool := range tools {
-		output, err := commands.Run(ctx, root, tool.name, "--version")
+	for _, tool := range LockedTools() {
+		output, err := commands.Run(ctx, root, tool.Name, "--version")
 		if err != nil {
 			return err
 		}
-		if !versionMatches(output, tool.version, tool.prefix) {
-			return fmt.Errorf("protobuf: %s version mismatch: require %s, got %q; run `make tools`", tool.name, tool.version, output)
+		if !tool.Matches(output) {
+			return fmt.Errorf("protobuf: %s version mismatch: require %s, got %q; run `jgo tools install`", tool.Name, tool.Version, output)
 		}
 	}
 	return nil
-}
-
-func versionMatches(output, version, prefix string) bool {
-	fields := strings.Fields(output)
-	if len(fields) == 0 {
-		return false
-	}
-	want := prefix + version
-	for _, field := range fields {
-		if strings.TrimSpace(field) == want {
-			return true
-		}
-	}
-	return false
 }
 
 type generatedService struct {

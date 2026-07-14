@@ -4,7 +4,7 @@ package {{.PackageName}}.v1;
 
 option go_package = "{{.Module}}/gen/pb/{{.PackageName}}/v1;{{.PackageName}}v1";
 
-service GreeterService {
+service {{.ServiceName}} {
   rpc Echo(EchoRequest) returns (EchoResponse);
 }
 

@@ -25,6 +25,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(newProjectCommand(stdout))
 	root.AddCommand(newAPICommand(stdout))
 	root.AddCommand(newRPCCommand(stdout))
+	root.AddCommand(newToolsCommand(stdout))
 	root.AddCommand(newCallCommand(stdout))
 	root.AddCommand(newListCommand(stdout))
 	root.AddCommand(newGenerateCommand(stdout))

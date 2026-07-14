@@ -41,6 +41,13 @@ func TestConfigValidation(t *testing.T) {
 			},
 			want: ErrInvalidVersion,
 		},
+		{
+			name: "unsupported Go version",
+			change: func(config *Config) {
+				config.GoVersion = "1.22.12"
+			},
+			want: ErrInvalidGoVersion,
+		},
 	}
 
 	for _, test := range tests {
@@ -76,10 +83,40 @@ func TestConfigNormalizesDefaults(t *testing.T) {
 	if config.JGOVersion != DefaultJGOVersion {
 		t.Fatalf("JGOVersion = %q, want %q", config.JGOVersion, DefaultJGOVersion)
 	}
-	if DefaultJGOVersion != "v0.1.0" {
-		t.Fatalf("DefaultJGOVersion = %q, want v0.1.0", DefaultJGOVersion)
+	if DefaultJGOVersion != "v0.2.0" {
+		t.Fatalf("DefaultJGOVersion = %q, want v0.2.0", DefaultJGOVersion)
+	}
+	if config.GoVersion != MinimumGoVersion {
+		t.Fatalf("GoVersion = %q, want %q", config.GoVersion, MinimumGoVersion)
 	}
 	if config.PackageName != "app_123_demo" {
 		t.Fatalf("PackageName = %q, want %q", config.PackageName, "app_123_demo")
+	}
+	if config.ServiceName != "App123DemoService" {
+		t.Fatalf("ServiceName = %q, want %q", config.ServiceName, "App123DemoService")
+	}
+}
+
+func TestNormalizeGoVersion(t *testing.T) {
+	for input, want := range map[string]string{
+		"1.24":      "1.24.0",
+		"go1.25.12": "1.25.12",
+	} {
+		got, err := NormalizeGoVersion(input)
+		if err != nil || got != want {
+			t.Fatalf("NormalizeGoVersion(%q) = %q, %v; want %q", input, got, err, want)
+		}
+	}
+}
+
+func TestServiceName(t *testing.T) {
+	for input, want := range map[string]string{
+		"user-rpc":      "UserRpcService",
+		"order-service": "OrderService",
+		"demo":          "DemoService",
+	} {
+		if got := serviceName(input); got != want {
+			t.Fatalf("serviceName(%q) = %q, want %q", input, got, want)
+		}
 	}
 }

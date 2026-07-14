@@ -5,10 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
-const DefaultJGOVersion = "v0.1.0"
+const (
+	DefaultJGOVersion = "v0.2.0"
+	MinimumGoVersion  = "1.24.0"
+)
 
 type Type string
 
@@ -26,7 +30,10 @@ type Config struct {
 	TargetDir   string
 	JGOVersion  string
 	JGOReplace  string
+	GoVersion   string
+	SkipTidy    bool
 	PackageName string
+	ServiceName string
 }
 
 var (
@@ -41,6 +48,7 @@ func (config *Config) normalizeAndValidate() error {
 	config.TargetDir = strings.TrimSpace(config.TargetDir)
 	config.JGOVersion = strings.TrimSpace(config.JGOVersion)
 	config.JGOReplace = strings.TrimSpace(config.JGOReplace)
+	config.GoVersion = strings.TrimSpace(config.GoVersion)
 
 	if !projectNamePattern.MatchString(config.Name) || config.Name == "." || config.Name == ".." {
 		return fmt.Errorf("%w: %q", ErrInvalidName, config.Name)
@@ -59,6 +67,11 @@ func (config *Config) normalizeAndValidate() error {
 	if !versionPattern.MatchString(config.JGOVersion) {
 		return fmt.Errorf("%w: %q", ErrInvalidVersion, config.JGOVersion)
 	}
+	goVersion, err := NormalizeGoVersion(config.GoVersion)
+	if err != nil {
+		return err
+	}
+	config.GoVersion = goVersion
 
 	if config.TargetDir == "" {
 		config.TargetDir = config.Name
@@ -89,7 +102,35 @@ func (config *Config) normalizeAndValidate() error {
 	}
 
 	config.PackageName = packageName(config.Name)
+	config.ServiceName = serviceName(config.Name)
 	return nil
+}
+
+// NormalizeGoVersion validates a Go release and returns the go.mod form.
+func NormalizeGoVersion(version string) (string, error) {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "go")
+	if version == "" {
+		version = MinimumGoVersion
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return "", fmt.Errorf("%w: %q", ErrInvalidGoVersion, version)
+	}
+	values := []int{0, 0, 0}
+	for index, part := range parts {
+		if part == "" {
+			return "", fmt.Errorf("%w: %q", ErrInvalidGoVersion, version)
+		}
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 0 {
+			return "", fmt.Errorf("%w: %q", ErrInvalidGoVersion, version)
+		}
+		values[index] = value
+	}
+	if values[0] < 1 || (values[0] == 1 && values[1] < 24) {
+		return "", fmt.Errorf("%w: require Go %s or newer, got %s", ErrInvalidGoVersion, MinimumGoVersion, version)
+	}
+	return fmt.Sprintf("%d.%d.%d", values[0], values[1], values[2]), nil
 }
 
 func validModulePath(module string) bool {
@@ -109,6 +150,28 @@ func packageName(name string) string {
 	name = strings.ToLower(strings.ReplaceAll(name, "-", "_"))
 	if name[0] >= '0' && name[0] <= '9' {
 		name = "app_" + name
+	}
+	return name
+}
+
+func serviceName(name string) string {
+	parts := strings.FieldsFunc(name, func(character rune) bool {
+		return character == '-' || character == '_'
+	})
+	var builder strings.Builder
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		builder.WriteString(strings.ToUpper(part[:1]))
+		builder.WriteString(part[1:])
+	}
+	name = builder.String()
+	if name[0] >= '0' && name[0] <= '9' {
+		name = "App" + name
+	}
+	if !strings.HasSuffix(strings.ToLower(name), "service") {
+		name += "Service"
 	}
 	return name
 }

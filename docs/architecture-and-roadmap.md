@@ -1,8 +1,8 @@
 # JGO 架构设计与实施路线
 
-> 状态：阶段 0-8 已完成，`v0.1.0` 已具备发布条件但尚未创建 tag  
+> 状态：`v0.1.0` 已发布，`v0.2.0` P0 兼容性与脚手架闭环改造已完成
 > Go module：`github.com/eyesofblue/jgo`  
-> 最低 Go 版本：`1.22`  
+> 最低 Go 版本：`1.24`
 > License：`Apache-2.0`  
 > 文档目标：记录 JGO 的已确认需求、架构边界、脚手架命令、执行步骤和验收标准。
 
@@ -21,9 +21,11 @@ JGO 是一个可独立使用的 Go 服务框架和脚手架，用于快速创建
 
 ### 1.1 Go 版本策略
 
-- JGO 的代码兼容下限为 Go 1.22。
-- `go.mod` 使用 `go 1.22.0`。
-- 选择 Go 1.22 是为了使用增强后的 `net/http.ServeMux` 方法与路径模式。
+- JGO 的代码兼容下限为 Go 1.24。
+- `go.mod` 使用 `go 1.24.0`；仓库本地开发可使用更高的已安装版本。
+- Go 1.24 保留增强后的 `net/http.ServeMux` 能力，并由内部链接器默认生成 macOS Mach-O `LC_UUID`，避免 Go 1.22 工具在当前 macOS 上被 dyld 拒绝。
+- `jgo new` 默认把当前 `go env GOVERSION` 写入生成项目，也允许通过 `--go-version` 显式指定；低于 1.24 时拒绝创建。
+- 所有工具安装使用 `GOTOOLCHAIN=local`，不通过 Go 自动工具链下载隐式切换版本。
 - 开发和 CI 必须始终覆盖最低版本。
 - 生产环境建议使用仍处于 Go 官方维护周期内的较新版本。
 
@@ -117,7 +119,7 @@ protobuf 是 gRPC 接口的唯一契约来源。
 ### 2.6 CLI 框架
 
 - `jgo` 命令行使用 Cobra 组织根命令、子命令、flags、帮助和 Shell 补全。
-- Cobra 锁定为 `github.com/spf13/cobra v1.10.2`，该版本兼容 JGO 的 Go 1.22 下限。
+- Cobra 锁定为 `github.com/spf13/cobra v1.10.2`，该版本兼容 JGO 的 Go 1.24 下限。
 - Cobra 只位于 `cmd/jgo` 和 `internal/command` 命令层。
 - 项目生成、契约编辑和调试等逻辑放在不依赖 Cobra 的普通 Go package 中。
 - JGO 运行时核心不依赖 Cobra。
@@ -126,13 +128,13 @@ protobuf 是 gRPC 接口的唯一契约来源。
 ### 2.7 OpenAPI 代码生成器
 
 - Web 代码生成复用 `github.com/oapi-codegen/oapi-codegen/v2`。
-- 锁定 `oapi-codegen v2.4.1`；该版本声明 Go 1.21 并支持 Go 1.22 标准库 HTTP Server。`v2.5.x` 和 `v2.6.x` 要求至少 Go 1.22.5，不符合 JGO 的 Go 1.22.0 下限。
+- 当前锁定 `oapi-codegen v2.4.1`；升级生成器版本必须单独验证生成结果和幂等性。
 - 生成项目锁定 `github.com/oapi-codegen/runtime v1.1.1`，该版本声明 Go 1.20。
 - JGO 负责 `api add`、OpenAPI 契约维护、生成配置、文件边界、幂等校验和用户体验。
 - `oapi-codegen` 负责底层 Go 类型、server interface、`net/http` 适配和 client 代码生成。
 - JGO 不重新实现一套完整的 OpenAPI 解析和 Go 代码生成器。
 - 生成器版本必须固定，不允许未经验证的浮动升级改变生成结果。
-- 选定版本必须兼容 JGO 的 Go 1.22 下限。
+- 选定版本必须兼容 JGO 的 Go 1.24 下限。
 
 复杂 HTTP 请求和返回模型由开发者在 `api/http/model/` 中使用 Go struct 定义。JGO 通过 Go AST 读取公开 struct、嵌套类型、数组、map、指针及 JSON tag，更新 OpenAPI schema；不会编译或运行项目代码。操作、参数来源和 HTTP 路由以 OpenAPI 为准，复杂模型字段以对应 Go struct 为准。
 
@@ -142,22 +144,23 @@ protobuf 是 gRPC 接口的唯一契约来源。
 - `buf lint` 负责 `.proto` 契约校验。
 - `buf generate` 负责调用固定版本的 protobuf Go 插件生成代码。
 - `jgo rpc generate` 封装 Buf 流程，用户日常不需要直接组合 protobuf 生成命令。
-- `jgo doctor` 检查 Buf 和生成插件是否存在、版本是否匹配。
+- `jgo tools install` 使用当前 Go 环境安装锁定工具，`jgo tools check` 检查路径、版本、构建 Go 版本和可执行性。
+- `jgo doctor` 在 gRPC/mixed 项目中复用工具检查。
 - JGO 不静默修改用户机器环境；工具缺失时输出明确安装指引。
-- Buf、`protoc-gen-go` 和 `protoc-gen-go-grpc` 的版本必须固定，并兼容 Go 1.22。
+- Buf、`protoc-gen-go` 和 `protoc-gen-go-grpc` 的版本必须固定，并兼容 Go 1.24。
 
 阶段 6 锁定的生成工具版本：
 
-- Buf `v1.46.0`：兼容 Go 1.22.0 的最新已核实版本。
-- `protoc-gen-go v1.36.7`：与框架 protobuf runtime 保持一致，兼容 Go 1.22。
-- `protoc-gen-go-grpc v1.5.1`：兼容 Go 1.22；从 v1.6.0 起模块要求 Go 1.24。
+- Buf `v1.46.0`：当前已完成真实生成回归的锁定版本。
+- `protoc-gen-go v1.36.7`：与框架 protobuf runtime 保持一致。
+- `protoc-gen-go-grpc v1.5.1`：当前已完成真实生成回归的锁定版本。
 - `github.com/bufbuild/protocompile v0.14.1`：用于 proto AST 解析、语法校验和安全定位，不依赖正则或特殊注释锚点修改契约。
 
 gRPC 运行时已锁定：
 
-- `google.golang.org/grpc v1.71.3`：该系列的最新补丁版本，模块声明 Go 1.22.0。
-- `google.golang.org/protobuf v1.36.7`：模块声明 Go 1.22。
-- 版本边界于 2026-07-13 通过官方 Go 模块元数据核实；更新的 gRPC-Go 版本已提高 Go 版本要求，不符合 JGO 的 Go 1.22 兼容下限。
+- `google.golang.org/grpc v1.71.3`：当前运行时锁定版本。
+- `google.golang.org/protobuf v1.36.7`：当前 protobuf runtime 锁定版本。
+- 依赖升级与 Go 最低版本提升分开实施，避免生成差异和平台修复同时引入。
 
 ## 3. 现有代码调研结论
 
@@ -1021,3 +1024,23 @@ jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 发布前完整验收真实创建并编译了 `web`、`grpc` 和 `mixed` 三类项目。验收覆盖复杂 Go struct JSON 请求、大对象返回、对象数组返回、HTTP 与 gRPC 同名 `GetUser`、`doctor`、统一生成、重复生成幂等性、生成项目测试和构建。
 
 该验收发现 mixed 项目原先会让 HTTP `GetUser` 和 gRPC `GetUser` 争用同一个 Go 业务方法。gRPC 业务方法现统一使用 `<Service><RPC>` 命名，例如 `GreeterServiceGetUser`；对外 protobuf 服务名和 RPC 名保持不变。这样也允许不同 gRPC service 复用常见 RPC 名。
+
+### 2026-07-14：v0.2.0 P0 兼容性与脚手架闭环
+
+已完成：
+
+- 最低 Go 版本提升为 1.24.0，CI 的 Linux/macOS 最低版本验证同步到 Go 1.24，不再依赖 macOS 外部链接 workaround。
+- `jgo new` 默认读取当前 `go env GOVERSION`，支持 `--go-version`，并使用 `GOTOOLCHAIN=local` 禁止隐式切换工具链。
+- `jgo new` 在临时目录中执行 `go mod tidy` 并生成 `go.sum`，失败时不提交半成品；离线环境可以显式使用 `--skip-tidy`。
+- 模板增加 build-tag 依赖锚点，保证首次生成 HTTP/protobuf 代码后无需再次手工补充 module 依赖。
+- 实现 `jgo tools install` 和 `jgo tools check`；检查结果包含实际路径、锁定版本和构建 Go 版本，并识别 macOS `LC_UUID` 启动失败。
+- 初始 protobuf service 根据项目名生成，例如 `demo-grpc` 对应 `DemoGrpcService`；`rpc generate` 继续扫描契约中的全部 service，不限制数量。
+- 生成项目新增 `internal/config`，按命令参数、环境变量、YAML、默认值的顺序加载服务名、HTTP/gRPC 地址和优雅关闭超时。
+- web、grpc、mixed 的 `main.go` 均使用配置，不再硬编码监听地址和关闭超时。
+
+验收结果：
+
+- 全仓普通测试、race 测试和 `go vet` 通过。
+- `jgo tools install/check` 在 goenv 环境中解析到真实工具路径，三个工具均由 Go 1.25.12 构建并可正常运行。
+- 真实创建 web、grpc、mixed 三类项目，创建后立即存在 `go.sum`。
+- 三类项目的接口新增、重复生成幂等、doctor、单元测试和构建全部通过。

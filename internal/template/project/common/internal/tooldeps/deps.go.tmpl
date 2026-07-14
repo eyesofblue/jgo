@@ -1,0 +1,10 @@
+//go:build tools
+
+// Package tooldeps keeps dependencies used by generated source code in
+// go.mod before the first contract generation. It is excluded from binaries.
+package tooldeps
+
+import (
+{{if .HasWeb}}	_ "github.com/oapi-codegen/runtime"
+{{end}}{{if .HasGRPC}}	_ "google.golang.org/protobuf/proto"
+{{end}})

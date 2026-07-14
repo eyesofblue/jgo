@@ -18,7 +18,7 @@ func TestAddAndGenerateWithGoStructModels(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	if _, err := projectgen.Generate(projectgen.Config{
 		Name: "demo", Module: "example.com/demo", Type: projectgen.TypeWeb,
-		TargetDir: root, JGOReplace: repositoryRoot,
+		TargetDir: root, JGOReplace: repositoryRoot, SkipTidy: true,
 	}); err != nil {
 		t.Fatalf("generate project: %v", err)
 	}

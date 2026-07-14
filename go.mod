@@ -1,6 +1,6 @@
 module github.com/eyesofblue/jgo
 
-go 1.22.0
+go 1.24.0
 
 require (
 	github.com/bufbuild/protocompile v0.14.1

@@ -24,6 +24,7 @@ func TestGenerateProjectTrees(t *testing.T) {
 				Module:    "example.com/demo-app",
 				Type:      projectType,
 				TargetDir: target,
+				SkipTidy:  true,
 			})
 			if err != nil {
 				t.Fatalf("Generate() error = %v", err)
@@ -40,6 +41,12 @@ func TestGenerateProjectTrees(t *testing.T) {
 			}
 			if actual != string(golden) {
 				t.Fatalf("generated tree differs from %s\nactual:\n%s", goldenPath, actual)
+			}
+			if projectType != TypeWeb {
+				contract, err := os.ReadFile(filepath.Join(target, "api", "proto", "demo_app", "v1", "service.proto"))
+				if err != nil || !strings.Contains(string(contract), "service DemoAppService") {
+					t.Fatalf("derived protobuf service missing: %v\n%s", err, contract)
+				}
 			}
 		})
 	}
@@ -132,10 +139,30 @@ func TestGeneratedProjectsCompile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Generate() error = %v", err)
 			}
-			runGo(t, target, "mod", "tidy")
+			if _, err := os.Stat(filepath.Join(target, "go.sum")); err != nil {
+				t.Fatalf("generated go.sum: %v", err)
+			}
 			runGo(t, target, "test", "./...")
 			runGo(t, target, "build", "./...")
 		})
+	}
+}
+
+func TestGenerateTidyFailureLeavesNoProject(t *testing.T) {
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "demo")
+	_, err = Generate(Config{
+		Name: "demo", Module: "example.com/demo", Type: TypeWeb,
+		TargetDir: target, JGOReplace: repositoryRoot, GoVersion: "99.0.0",
+	})
+	if !errors.Is(err, ErrTidyFailed) {
+		t.Fatalf("Generate() error = %v, want %v", err, ErrTidyFailed)
+	}
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("target exists after tidy failure: %v", statErr)
 	}
 }
 
@@ -168,6 +195,7 @@ func testConfig(target string) Config {
 		Module:    "example.com/demo",
 		Type:      TypeWeb,
 		TargetDir: target,
+		SkipTidy:  true,
 	}
 }
 

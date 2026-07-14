@@ -18,8 +18,8 @@ The first release line is `v0.1.x`; see [CHANGELOG.md](CHANGELOG.md).
 
 | Project type | Required software |
 | --- | --- |
-| `web` | Go `1.22.0` or later |
-| `grpc` | Go `1.22.0` or later, Buf `1.46.0`, `protoc-gen-go` `1.36.7`, `protoc-gen-go-grpc` `1.5.1` |
+| `web` | Go `1.24.0` or later |
+| `grpc` | Go `1.24.0` or later, Buf `1.46.0`, `protoc-gen-go` `1.36.7`, `protoc-gen-go-grpc` `1.5.1` |
 | `mixed` | The same Go and protobuf toolchain as `grpc` |
 
 JGO has no required database, Redis, message queue, service registry, configuration center, or other private infrastructure. Private infrastructure can be integrated later through application components and HTTP/gRPC middleware.
@@ -46,18 +46,18 @@ go build -trimpath -o bin/jgo ./cmd/jgo
 ./bin/jgo --version
 ```
 
-For gRPC and mixed projects, install the locked generators from the JGO repository or from a generated project:
+For gRPC and mixed projects, install the locked generators once per Go development environment:
 
 ```bash
-make tools
-command -v buf protoc-gen-go protoc-gen-go-grpc
+jgo tools install
+jgo tools check
 ```
 
-JGO never installs these tools silently. Exact module and tool versions are documented in [docs/dependencies.md](docs/dependencies.md).
+JGO uses `GOTOOLCHAIN=local` and never downloads or switches Go toolchains silently. Exact module and tool versions are documented in [docs/dependencies.md](docs/dependencies.md).
 
 ## New project: create a service and its first API
 
-Generated projects default to `github.com/eyesofblue/jgo v0.1.0`. During local framework development, add `--jgo-replace /absolute/path/to/jgo`; do not commit a machine-specific replacement for normal users.
+Generated projects default to `github.com/eyesofblue/jgo v0.2.0` and the active `go env GOVERSION`; use `--go-version` to override it. Project creation runs `go mod tidy` and writes `go.sum`; offline environments can use `--skip-tidy`. During local framework development, add `--jgo-replace /absolute/path/to/jgo`; do not commit a machine-specific replacement for normal users.
 
 ### Web service
 
@@ -94,7 +94,7 @@ Business success is `code: 0`; HTTP status represents the transport result, whil
 
 ### gRPC service
 
-`make tools` installs the locked Buf and protobuf generators into the current Go development environment. Run it once per environment, not once per project:
+`jgo tools install` installs the locked Buf and protobuf generators into the current Go development environment. Run it once per environment, not once per project:
 
 ```bash
 jgo new user-rpc \
@@ -102,19 +102,19 @@ jgo new user-rpc \
   --type grpc
 cd user-rpc
 
-make tools       # Run the first time this environment uses JGO gRPC.
+jgo tools install # Run the first time this environment uses JGO gRPC.
 jgo doctor
-jgo rpc add GetUser --service GreeterService
+jgo rpc add GetUser --service UserRpcService
 # Edit the GetUserRequest and GetUserResponse messages under api/proto/.
 jgo rpc generate
-# Implement the generated GreeterServiceGetUser method under internal/service/.
+# Implement the generated UserRpcServiceGetUser method under internal/service/.
 go test ./...
 jgo run
 ```
 
-The initial proto contains a sample `GreeterService.Echo` RPC; keep it or remove it when establishing the real contract. The gRPC Health service is always registered, and business services listen on `:9090` by default.
+The initial protobuf service name is derived from the project name; for example, `user-rpc` becomes `UserRpcService` with a sample `Echo` RPC. Keep or remove the sample when establishing the real contract. The gRPC Health service is always registered, and its address is read from `configs/local.yaml`.
 
-JGO locks Buf `1.46.0`, `protoc-gen-go` `1.36.7`, and `protoc-gen-go-grpc` `1.5.1`, all compatible with the Go 1.22.0 baseline. gRPC business methods use `<Service><RPC>` names, such as `GreeterServiceGetUser`; public protobuf service and RPC names remain unchanged.
+JGO locks Buf `1.46.0`, `protoc-gen-go` `1.36.7`, and `protoc-gen-go-grpc` `1.5.1`. gRPC business methods use `<Service><RPC>` names, such as `UserRpcServiceGetUser`; public protobuf service and RPC names remain unchanged.
 
 ### Mixed service
 
@@ -126,7 +126,7 @@ jgo new user-service \
   --type mixed
 cd user-service
 
-make tools       # Skip if the locked tools are already installed in this environment.
+jgo tools install # Skip if the locked tools are already installed in this environment.
 jgo doctor
 # Add the required APIs and complete their structs/proto messages as shown above.
 jgo generate     # Generate both HTTP and gRPC code.
@@ -134,7 +134,7 @@ go test ./...
 jgo run
 ```
 
-Mixed projects listen on HTTP `:8080` and gRPC `:9090` by default.
+Mixed projects listen on HTTP `:8080` and gRPC `:9090` by default; YAML, environment variables, or command-line flags can override both addresses.
 
 ## Existing service: add an API
 
@@ -157,14 +157,14 @@ go test ./...
 
 ### Add a gRPC API
 
-For example, add `GetUser` to an existing `GreeterService` that already has other RPCs:
+For example, add `GetUser` to an existing `UserService` that already has other RPCs:
 
 ```bash
 jgo doctor       # Verify the locked tool versions in the current environment.
-jgo rpc add GetUser --service GreeterService
+jgo rpc add GetUser --service UserService
 # Edit GetUserRequest/GetUserResponse in the corresponding .proto file.
 jgo rpc generate
-# Implement the generated GreeterServiceGetUser method.
+# Implement the generated UserServiceGetUser method.
 go test ./...
 ```
 
@@ -185,7 +185,7 @@ Use the same JSON input for both protocols. JGO reads OpenAPI or protobuf descri
 ```bash
 jgo list
 jgo call http GetUser --addr http://127.0.0.1:8080 --data '{"uid":12345}'
-jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hello"}'
+jgo call grpc UserRpcService.Echo --addr 127.0.0.1:9090 --data '{"message":"hello"}'
 ```
 
 Both call commands support repeatable `--header 'Name: Value'` metadata and `--timeout`. gRPC prefers server Reflection and automatically falls back to protobuf files under `api/proto/`.

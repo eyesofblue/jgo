@@ -16,7 +16,7 @@ func TestDoctorPassesForGeneratedWebProject(t *testing.T) {
 	if err := Execute(&output, &output, []string{"doctor", "--root", root}); err != nil {
 		t.Fatalf("Execute() error = %v\n%s", err, output.String())
 	}
-	for _, check := range []string{"PASS  project", "PASS  Go >= 1.22.0", "PASS  JGO module dependency", "PASS  OpenAPI contract"} {
+	for _, check := range []string{"PASS  project", "PASS  Go >= 1.24.0", "PASS  JGO module dependency", "PASS  OpenAPI contract"} {
 		if !strings.Contains(output.String(), check) {
 			t.Fatalf("doctor output does not contain %q:\n%s", check, output.String())
 		}
@@ -81,7 +81,7 @@ func generatedWebProject(t *testing.T) string {
 	root := filepath.Join(t.TempDir(), "demo-web")
 	_, err = projectgen.Generate(projectgen.Config{
 		Name: "demo-web", Module: "example.com/demo-web", Type: projectgen.TypeWeb,
-		TargetDir: root, JGOReplace: repositoryRoot,
+		TargetDir: root, JGOReplace: repositoryRoot, SkipTidy: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func generatedWebProject(t *testing.T) string {
 func minimalRunnableProject(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "runnable")
-	writeCommandContract(t, root, "go.mod", "module example.com/runnable\n\ngo 1.22.0\n")
+	writeCommandContract(t, root, "go.mod", "module example.com/runnable\n\ngo 1.24.0\n")
 	writeCommandContract(t, root, "api/http/openapi.yaml", `openapi: 3.0.3
 info: {title: test, version: 0.1.0}
 paths: {}

@@ -9,25 +9,23 @@ permissions:
 
 jobs:
   quality:
-    name: Go 1.22 / ${{ matrix.os }}
+    name: Go ${{ matrix.go }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    env:
-      # Go 1.22's internal Mach-O linker predates LC_UUID generation. Current
-      # macOS runners require it, so use Apple's external linker on macOS.
-      GOFLAGS: ${{ matrix.goflags }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            goflags: ""
+            go: 1.24.x
           - os: macos-latest
-            goflags: "-ldflags=-linkmode=external"
+            go: 1.24.x
+          - os: ubuntu-latest
+            go: 1.25.x
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: 1.22.x
+          go-version: ${{ matrix.go }}
           cache-dependency-path: go.sum
       - name: Check formatting
         shell: bash
@@ -48,12 +46,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: 1.22.x
+          go-version: 1.24.x
           cache-dependency-path: go.sum
       - name: Install locked protobuf tools
-        run: |
-          go install github.com/bufbuild/buf/cmd/buf@v1.46.0
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.7
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+        run: go run ./cmd/jgo tools install
       - name: Verify real generated project is idempotent
         run: ./scripts/verify-generation.sh

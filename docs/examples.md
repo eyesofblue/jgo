@@ -45,7 +45,7 @@ jgo generate
 jgo run
 ```
 
-生成的业务占位方法名为 `GreeterServiceGetUser`；gRPC transport 仍对外实现 protobuf 中的 `GreeterService.GetUser`。
+生成的业务占位方法名为 `UserRpcServiceGetUser`；gRPC transport 仍对外实现 protobuf 中的 `UserRpcService.GetUser`。
 
 复杂请求和返回值在 `api/http/model/` 中定义为 Go struct。HTTP body 固定为：
 
@@ -60,9 +60,9 @@ HTTP status 与业务 `code` 独立。
 ```bash
 jgo new user-rpc --module example.com/user-rpc --type grpc
 cd user-rpc
-make tools
+jgo tools install
 
-jgo rpc add GetUser --service GreeterService
+jgo rpc add GetUser --service UserRpcService
 # 编辑 api/proto/user_rpc/v1/service.proto 中的 request/response 字段。
 jgo generate
 jgo run
@@ -71,7 +71,7 @@ jgo run
 调试：
 
 ```bash
-jgo call grpc GreeterService.GetUser \
+jgo call grpc UserRpcService.GetUser \
   --addr 127.0.0.1:9090 \
   --data '{"uid":12345}'
 ```
@@ -81,7 +81,7 @@ jgo call grpc GreeterService.GetUser \
 ```bash
 jgo new user-service --module example.com/user-service --type mixed
 cd user-service
-make tools
+jgo tools install
 
 # 按 Web 和 gRPC 示例分别维护两份协议契约。
 jgo generate
