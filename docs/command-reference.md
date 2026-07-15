@@ -6,7 +6,7 @@
 
 ```bash
 jgo new <name> --module <module> --type <web|grpc|mixed|proto> \
-  [--output <dir>] [--jgo-version v0.4.0] [--go-version 1.24.0] \
+  [--output <dir>] [--jgo-version v0.4.1] [--go-version 1.24.0] \
   [--skip-tidy] [--jgo-replace <absolute-path>]
 
 jgo generate [--root <project>]

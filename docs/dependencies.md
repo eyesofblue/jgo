@@ -72,7 +72,7 @@ go mod tidy -diff
 新项目默认依赖：
 
 ```text
-github.com/eyesofblue/jgo v0.4.0
+github.com/eyesofblue/jgo v0.4.1
 ```
 
 - 正常使用：通过 `--jgo-version` 指定已发布版本。

@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+env:
+  GOTOOLCHAIN: local
+  GOWORK: off
+
 jobs:
   release:
     runs-on: ubuntu-latest

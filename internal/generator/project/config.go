@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	DefaultJGOVersion = "v0.4.0"
+	DefaultJGOVersion = "v0.4.1"
 	MinimumGoVersion  = "1.24.0"
 )
 

@@ -3,7 +3,7 @@
 最低 Go 版本是 1.24.0。
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.0
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.1
 ```
 
 ## 创建空服务

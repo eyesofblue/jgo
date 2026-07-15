@@ -4,7 +4,7 @@
 
 JGO 是一个不依赖私有基础设施的 Go 服务框架和脚手架，支持 RPC 风格的 HTTP/JSON API 与 gRPC/protobuf。数据库、Redis、MQ、服务发现、认证中心等能力通过标准扩展接口接入。
 
-Module：`github.com/eyesofblue/jgo`。当前主干面向 `v0.4.0`。
+Module：`github.com/eyesofblue/jgo`。当前主干面向 `v0.4.1`。
 
 ## 前置依赖
 
@@ -13,7 +13,7 @@ Module：`github.com/eyesofblue/jgo`。当前主干面向 `v0.4.0`。
 - 只绑定公共协议的 external-only gRPC 项目不需要安装 Buf。
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.0
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.1
 jgo --version
 
 # 当前 Go 环境第一次开发本地 protobuf 时执行一次

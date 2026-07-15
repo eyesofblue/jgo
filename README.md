@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 JGO is a standalone Go service framework and project scaffold for RPC-style HTTP/JSON APIs and gRPC/protobuf. It has no mandatory private-infrastructure dependency; databases, Redis, messaging, discovery, and identity systems integrate through standard extension points.
 
-Module: `github.com/eyesofblue/jgo`. The current main branch targets `v0.4.0`.
+Module: `github.com/eyesofblue/jgo`. The current main branch targets `v0.4.1`.
 
 ## Requirements and installation
 
@@ -13,7 +13,7 @@ Module: `github.com/eyesofblue/jgo`. The current main branch targets `v0.4.0`.
 - An external-only gRPC project does not need Buf.
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.0
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.1
 jgo --version
 
 # Once per Go environment that develops local protobuf contracts

@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+env:
+  GOTOOLCHAIN: local
+  GOWORK: off
+
 jobs:
   quality:
     name: Go ${{ matrix.go }} / ${{ matrix.os }}

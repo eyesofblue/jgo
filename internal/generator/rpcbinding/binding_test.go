@@ -169,7 +169,10 @@ func TestBindClientIsIdempotentAndUpdatesVersion(t *testing.T) {
 }
 
 func TestBindResolvesUnpublishedWorkspaceModule(t *testing.T) {
-	parent := t.TempDir()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	protocol := filepath.Join(parent, "company-api")
 	service := filepath.Join(parent, "service")
 	writeTestFile(t, filepath.Join(protocol, "go.mod"), "module example.com/company-api\n\ngo 1.24.0\n")
@@ -178,7 +181,9 @@ func TestBindResolvesUnpublishedWorkspaceModule(t *testing.T) {
 	writeTestFile(t, filepath.Join(service, "cmd/server/main.go"), "package main\nfunc main() {}\n")
 	writeTestFile(t, filepath.Join(service, "internal/service/service.go"), "package service\ntype Service struct{}\n")
 	writeTestFile(t, filepath.Join(service, "configs/local.yaml"), "rpc_client: {}\n")
-	writeTestFile(t, filepath.Join(parent, "go.work"), "go 1.24.0\n\nuse (\n\t./company-api\n\t./service\n)\n")
+	workspace := filepath.Join(parent, "go.work")
+	writeTestFile(t, workspace, "go 1.24.0\n\nuse (\n\t./company-api\n\t./service\n)\n")
+	t.Setenv("GOWORK", workspace)
 	binding, err := BindClient(BindConfig{Root: service, ModuleSpec: "example.com/company-api", Service: "UserService", SkipTidy: true})
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +197,10 @@ func TestBindResolvesUnpublishedWorkspaceModule(t *testing.T) {
 }
 
 func TestWorkspaceBindWithStandardGoModTidy(t *testing.T) {
-	parent := t.TempDir()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	protocol := filepath.Join(parent, "company-api")
 	service := filepath.Join(parent, "service")
 	writeTestFile(t, filepath.Join(protocol, "go.mod"), "module example.com/company-api\n\ngo 1.24.0\n\nrequire google.golang.org/grpc v1.79.1\n")
@@ -204,7 +212,9 @@ func TestWorkspaceBindWithStandardGoModTidy(t *testing.T) {
 	if _, err := projectgen.Generate(projectgen.Config{Name: "service", Module: "example.com/service", Type: projectgen.TypeWeb, TargetDir: service, JGOReplace: repositoryRoot, SkipTidy: true}); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(parent, "go.work"), "go 1.24.0\n\nuse (\n\t./company-api\n\t./service\n)\n")
+	workspace := filepath.Join(parent, "go.work")
+	writeTestFile(t, workspace, "go 1.24.0\n\nuse (\n\t./company-api\n\t./service\n)\n")
+	t.Setenv("GOWORK", workspace)
 	if _, err := BindClient(BindConfig{Root: service, ModuleSpec: "example.com/company-api", Service: "UserService"}); err != nil {
 		t.Fatal(err)
 	}

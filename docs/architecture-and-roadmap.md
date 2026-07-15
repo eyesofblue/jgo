@@ -1,6 +1,6 @@
 # JGO 架构设计与实施路线
 
-> 状态：`v0.3.0` 已发布，当前主干为 `v0.4.0` 发布候选
+> 状态：`v0.4.0` 已发布，当前主干为 `v0.4.1` 发布候选
 > Go module：`github.com/eyesofblue/jgo`  
 > 最低 Go 版本：`1.24`
 > License：`Apache-2.0`  
@@ -1282,3 +1282,19 @@ jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 
 - `v0.4.0` Changelog、知识库、发布流程和模板依赖已经统一。
 - 本次提交和远端 CI 成功之前不得创建 tag；tag 与 GitHub Release 仍需维护者单独确认和执行。
+
+### 2026-07-15：v0.4.1 发布验证隔离
+
+- workspace binding 测试显式使用测试创建的 `go.work`，不再依赖调用者继承的 `GOWORK`。
+- macOS 测试先解析临时目录的真实路径，避免 `/var` 与 `/private/var` 指向同一目录却被 Go workspace 判定为不同 module 根目录。
+- Make、CI、release 和真实生成验证统一使用 `GOWORK=off`，确保独立 clone、嵌套在无关 workspace 下和发布 runner 得到相同结果。
+- 标准发布门禁加入 `go mod verify` 与 `go mod tidy -diff`。
+- 明确 `v0.4.x` patch 兼容范围和 CLI/generated project 支持关系；本版本不改变运行时、配置或 manifest 契约。
+
+完成验收：
+
+- 格式检查、`go mod verify`、`go mod tidy -diff`、全仓普通测试、race 和 vet 全部通过。
+- 两项 workspace binding 测试在外层 `GOWORK=off` 环境下独立通过。
+- CLI 构建以及 web、grpc、mixed、proto 四类真实生成、重复生成和项目编译通过。
+- 公共 proto → gRPC server → Web caller 运行链路验收通过。
+- `v0.4.1` 代码与知识库已完成；tag 和 GitHub Release 仍由维护者在远端 CI 通过后单独创建。

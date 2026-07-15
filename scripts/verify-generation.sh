@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export GOTOOLCHAIN=local
+export GOWORK=off
+
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 temporary_root="$(mktemp -d)"
 server_pid=""
@@ -53,7 +56,7 @@ for project_type in web grpc mixed proto; do
   if [[ "${project_type}" == "proto" ]]; then
     ! grep -q 'github.com/eyesofblue/jgo' "${project_root}/go.mod"
   else
-    grep -q 'github.com/eyesofblue/jgo v0.4.0' "${project_root}/go.mod"
+    grep -q 'github.com/eyesofblue/jgo v0.4.1' "${project_root}/go.mod"
   fi
 
   if [[ "${project_type}" == "web" || "${project_type}" == "mixed" ]]; then
