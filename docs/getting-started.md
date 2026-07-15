@@ -3,7 +3,7 @@
 最低 Go 版本是 1.24.0。
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.1
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.5.0
 ```
 
 ## 创建空服务
@@ -44,6 +44,7 @@ jgo rpc server bind UserService \
 ```
 
 这种 external-only 服务不需要本地 proto，也不需要 Buf。
+默认会创建 `UserHandler` 和 `UserHandler.GetUser` 业务桩。同名 Service 需要并存时，为后续 binding 增加 `--handler-name UserV2`。
 
 ## 调用公共协议
 

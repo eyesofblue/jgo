@@ -4,6 +4,29 @@ All notable JGO changes are documented here. JGO follows Semantic Versioning.
 
 ## Unreleased
 
+## v0.5.0 - 2026-07-15
+
+### Breaking changes
+
+- External RPC server implementations now live on a dedicated handler per protobuf Service. `UserService.GetUser` defaults to `UserHandler.GetUser` instead of a package-qualified method on the application `Service`.
+- RPC binding manifests use version 2 and record the stable handler name. Version 1 manifests are rejected with manual migration guidance; JGO does not rewrite user-owned implementations.
+
+### Added
+
+- Added `jgo rpc server bind --handler-name <name>` for binding same-named Services from different protobuf packages without changing their RPC method names.
+- Generated user-owned handlers embed `*service.Service`, preserving access to application dependencies and package-local helpers.
+- Generated gRPC transport adapters depend on a narrow per-Service handler interface and retain the existing business-error mapping and observability behavior.
+- Handler stub filenames include the complete Handler type prefix, avoiding collisions with the Handler declaration and preserving distinct initialism-heavy RPC names such as `GetURL` and `GetUrl`.
+- `jgo doctor` validates each bound Handler type, constructor, and complete RPC method signature in addition to generated transport content; manifest method metadata and service-package boundaries are validated before mutation.
+- `jgo list` displays the Handler type for every external server binding, including custom `--handler-name` values.
+
+### Compatibility
+
+- Local protobuf generation, HTTP generation, RPC clients, runtime configuration, and public runtime APIs are unchanged.
+- Generated projects default to `github.com/eyesofblue/jgo v0.5.0`.
+- Module: `github.com/eyesofblue/jgo`
+- Minimum Go version: `1.24.0`
+
 ## v0.4.1 - 2026-07-15
 
 ### Fixed

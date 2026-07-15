@@ -32,19 +32,20 @@ func newRPCServerCommand(stdout io.Writer) *cobra.Command {
 }
 
 func newRPCServerBindCommand(stdout io.Writer) *cobra.Command {
-	options := struct{ root, module, packagePath string }{}
+	options := struct{ root, module, packagePath, handlerName string }{}
 	command := &cobra.Command{
 		Use: "bind <service-name>", Short: "Bind and register a Service from a shared protobuf module", Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			binding, err := rpcbindinggen.BindServer(rpcbindinggen.BindConfig{Root: options.root, ModuleSpec: options.module, Package: options.packagePath, Service: args[0]})
+			binding, err := rpcbindinggen.BindServer(rpcbindinggen.BindConfig{Root: options.root, ModuleSpec: options.module, Package: options.packagePath, Service: args[0], HandlerName: options.handlerName})
 			if err != nil {
 				return err
 			}
-			if _, err = fmt.Fprintf(stdout, "bound RPC server %s from %s\n", binding.Service, binding.Package); err != nil {
+			handlerType := binding.Handler + "Handler"
+			if _, err = fmt.Fprintf(stdout, "bound RPC server %s from %s with handler %s\n", binding.Service, binding.Package, handlerType); err != nil {
 				return err
 			}
 			for _, method := range binding.Methods {
-				if _, err = fmt.Fprintf(stdout, "implement Service.%s\n", method.Business); err != nil {
+				if _, err = fmt.Fprintf(stdout, "implement %s.%s\n", handlerType, method.Name); err != nil {
 					return err
 				}
 			}
@@ -55,6 +56,7 @@ func newRPCServerBindCommand(stdout io.Writer) *cobra.Command {
 	flags.StringVar(&options.root, "root", ".", "JGO service project root")
 	flags.StringVar(&options.module, "module", "", "shared protobuf module path, optionally followed by @<version> (required)")
 	flags.StringVar(&options.packagePath, "package", "", "exact generated Go package when the Service is not unique")
+	flags.StringVar(&options.handlerName, "handler-name", "", "handler name prefix (optional Handler suffix is normalized; defaults from Service)")
 	_ = command.MarkFlagRequired("module")
 	return command
 }

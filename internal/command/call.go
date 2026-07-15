@@ -130,7 +130,7 @@ func newListCommand(stdout io.Writer) *cobra.Command {
 				_, _ = fmt.Fprintf(writer, "gRPC\tlocal\t%s\t%s\n", kind, method.FullName)
 			}
 			for _, binding := range bindings.Servers {
-				_, _ = fmt.Fprintf(writer, "gRPC\texternal-server\tservice\t%s.%s\t%s\n", binding.Package, binding.Service, displayModule(binding.Module, binding.Version))
+				_, _ = fmt.Fprintf(writer, "gRPC\texternal-server\t%sHandler\t%s.%s\t%s\n", binding.Handler, binding.Package, binding.Service, displayModule(binding.Module, binding.Version))
 			}
 			for _, binding := range bindings.Clients {
 				_, _ = fmt.Fprintf(writer, "gRPC\texternal-client\t%s\t%s.%s\t%s\n", binding.Name, binding.Package, binding.Service, displayModule(binding.Module, binding.Version))

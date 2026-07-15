@@ -1,6 +1,6 @@
 # JGO 架构设计与实施路线
 
-> 状态：`v0.4.0` 已发布，当前主干为 `v0.4.1` 发布候选
+> 状态：`v0.4.1` 已发布，当前主干为 `v0.5.0` 发布候选
 > Go module：`github.com/eyesofblue/jgo`  
 > 最低 Go 版本：`1.24`
 > License：`Apache-2.0`  
@@ -73,7 +73,7 @@
 - 项目名以数字开头、protobuf package 是 Go 关键字等情况会生成合法的 protobuf/Go package；无法安全推导时直接报错。
 - Service/RPC 组合产生相同业务方法名或相同 service 文件名时，在写文件前拒绝生成，不以覆盖顺序决定结果。
 - `.jgo/rpc.json` 严格拒绝未知字段、重复 binding、客户端 Go 字段碰撞和不适用于当前项目类型的 server binding。
-- 外部服务端业务方法统一使用 `<PackagePath><Service><Method>`，映射固化在 manifest；即使不同版本使用相同 Go package 名也不会冲突，规范化碰撞时增加稳定 path 摘要，同名 Service 并存时 unbind 必须指定 package。
+- v0.5 外部服务端为每个 binding 生成独立 Handler，保留 protobuf 原始 Method 名；Handler 名固化在 manifest。同名 Service 并存时用 `--handler-name` 区分 Handler，并在 unbind 时指定 package。
 - bind/unbind 先生成再编译，失败恢复 manifest、go.mod/go.sum、配置和所有 JGO 管理文件；用户业务实现始终不被删除。
 - OpenAPI 三个 managed 输出事务式提交；生成 handler 在业务调用前执行 OpenAPI request validation。
 - Readiness 收集端执行硬超时并隔离 checker panic；返回给 `/readyz` 的错误不会包含 panic 值或堆栈。
@@ -1297,4 +1297,28 @@ jgo call grpc GreeterService.Echo --addr 127.0.0.1:9090 --data '{"message":"hell
 - 两项 workspace binding 测试在外层 `GOWORK=off` 环境下独立通过。
 - CLI 构建以及 web、grpc、mixed、proto 四类真实生成、重复生成和项目编译通过。
 - 公共 proto → gRPC server → Web caller 运行链路验收通过。
-- `v0.4.1` 代码与知识库已完成；tag 和 GitHub Release 仍由维护者在远端 CI 通过后单独创建。
+- `v0.4.1` 已完成代码、知识库、远端 CI、tag 和 GitHub Release 发布。
+
+### 2026-07-15：v0.5.0 external RPC Handler 隔离
+
+最终方案：
+
+- 只调整 external RPC server binding；本地 protobuf、HTTP 和 external RPC client 保持原有契约。
+- 每个外部 protobuf Service 对应一个独立、用户持有的 Handler。默认从 Service 名去掉 `Service` 后缀，例如 `UserService.GetUser` 由 `UserHandler.GetUser` 实现。
+- Handler 与应用 `Service` 位于同一个 `internal/service` package，并嵌入 `*Service`，所以现有依赖字段和 package 内辅助方法仍可复用。
+- transport 生成窄接口和适配器，只依赖对应 Handler 的原始 RPC 方法名；业务错误映射、trace 和注册行为不变。
+- server binding 身份仍是 `package + Service`。若两个 package 都包含 `UserService`，第一个默认使用 `UserHandler`，第二个必须通过 `--handler-name UserV2` 使用 `UserV2Handler`，从类型维度消除 `GetUser` 冲突。
+- Handler 名写入 `.jgo/rpc.json` manifest version 2，创建后不可隐式改名。`unbind` 删除托管注册但保留 Handler 和方法实现。
+- Handler 声明与方法桩采用不会互相碰撞的文件名；`GetURL`/`GetUrl`、RPC 名为 `Handler`、已有用户 Handler、构造函数缺失及 `internal/service` 混入错误 package 均在测试中覆盖。
+- doctor 除了精确比对 transport，还检查 Handler 类型、`NewXxxHandler(*Service) *XxxHandler` 构造函数和每个 RPC 的完整方法签名。签名必须使用指针接收者、`context.Context`、绑定 protobuf package 中对应的 Request/Response 指针以及内置 `error`；import alias 可以不同。错误直接展示 expected/actual signature，生成器复用同一校验，不会把同名错误方法当作可复用实现。
+- `jgo list` 的 external-server 行把实际 Handler 类型作为正式列展示，例如 `UserHandler` 或通过 `--handler-name` 创建的 `AdministrationHandler`，使 manifest 中的业务实现入口可发现。
+- 被删除的标准 Handler/方法桩可由 `jgo generate` 重建，自定义但不完整或签名错误的 Handler 会明确报错而不会被覆盖。
+- v0.4 manifest version 1 不做自动代码迁移；v0.5 明确拒绝并提示先备份、删除旧 manifest、重新 bind，再把 `Service.<旧长方法名>` 的函数体手工迁到 `<Handler>.<RPC>`。当前尚无正式上线服务，因此不引入高复杂度的通用迁移引擎。
+- local protobuf 继续使用 `Service.<Service><Method>`；v0.5 的目标只解决 external package-qualified 长方法名。统一 local/external Handler 模型会扩大生成、生命周期、文件布局和迁移范围，明确留待后续独立评估。
+
+验收要求：
+
+- 默认命名、显式 Handler 命名、同名 Service 冲突、重复 bind、unbind 保留用户文件和 v1 拒绝均有回归测试。
+- Doctor 必须拒绝错误 receiver、Request/Response、protobuf import path、参数/返回值数量和非内置 `error`，并接受等价 import alias；`jgo list` 必须显示默认与自定义 Handler。
+- 真实 proto module → gRPC server → Web caller 验收必须使用短 RPC 方法 `DemoProtoHandler.GetUser` 完成编译和运行验证。
+- web、grpc、mixed、proto 四类项目生成、普通测试、race、vet 和真实运行 E2E 全部通过后，才可提交 v0.5.0 发布候选。

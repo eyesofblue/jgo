@@ -29,7 +29,7 @@ func TestDoctorPassesForGeneratedWebProject(t *testing.T) {
 func TestDoctorRejectsBrokenExternalBindingManifest(t *testing.T) {
 	for name, manifest := range map[string]string{
 		"invalid JSON":  "{not-json",
-		"unknown field": `{"version":1,"unexpected":true}`,
+		"unknown field": `{"version":2,"unexpected":true}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := generatedWebProject(t)

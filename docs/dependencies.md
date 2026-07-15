@@ -72,7 +72,7 @@ go mod tidy -diff
 新项目默认依赖：
 
 ```text
-github.com/eyesofblue/jgo v0.4.1
+github.com/eyesofblue/jgo v0.5.0
 ```
 
 - 正常使用：通过 `--jgo-version` 指定已发布版本。
@@ -92,4 +92,4 @@ github.com/eyesofblue/jgo v0.4.1
 
 ## mixed 项目的业务方法命名
 
-HTTP 业务方法使用 OpenAPI `operationId`，例如 `GetUser`。项目自身 protobuf 业务方法使用 `<Service><RPC>`，例如 `UserServiceGetUser`；外部 server binding 从完整 import path 提取稳定前缀，使用 `<PackagePath><Service><RPC>`，例如 `CompanyUserV2UserServiceGetUser`。因此，即使 v1/v2 的 Go package 都显式命名为 `user`，也可以同时绑定；规范化碰撞时为后绑定项增加稳定 path 摘要。旧 manifest 尚未记录 `business` 且旧业务方法仍存在时，doctor/generate 会要求先显式重命名，随后复用该实现而不会创建重复桩。
+HTTP 业务方法使用 OpenAPI `operationId`，例如 `GetUser`。项目自身 protobuf 业务方法仍使用 `<Service><RPC>`，例如 `UserServiceGetUser`。外部 server binding 使用独立 Handler，默认把 `UserService.GetUser` 映射为 `UserHandler.GetUser`；同名 Service 通过 `--handler-name UserV2` 映射为 `UserV2Handler.GetUser`。Handler 嵌入 `*Service`，因此仍可访问应用依赖和同 package 的辅助方法。

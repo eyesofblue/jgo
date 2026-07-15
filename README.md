@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 JGO is a standalone Go service framework and project scaffold for RPC-style HTTP/JSON APIs and gRPC/protobuf. It has no mandatory private-infrastructure dependency; databases, Redis, messaging, discovery, and identity systems integrate through standard extension points.
 
-Module: `github.com/eyesofblue/jgo`. The current main branch targets `v0.4.1`.
+Module: `github.com/eyesofblue/jgo`. The current main branch targets `v0.5.0`.
 
 ## Requirements and installation
 
@@ -13,7 +13,7 @@ Module: `github.com/eyesofblue/jgo`. The current main branch targets `v0.4.1`.
 - An external-only gRPC project does not need Buf.
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.1
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.5.0
 jgo --version
 
 # Once per Go environment that develops local protobuf contracts
@@ -112,7 +112,11 @@ jgo rpc client bind UserService \
 
 `--name` is the stable client config/code identifier. Address, timeout, TLS, and readiness remain editable in YAML. Repeating `bind` is idempotent and updates compatible module versions without overwriting runtime configuration.
 
-Server bindings are identified by `package + Service`, so `company.user.v1.UserService` and `company.user.v2.UserService` can run together. External server business methods derive a stable prefix from the complete import path; for example, `company/user/v1.UserService.GetUser` maps to `Service.CompanyUserV1UserServiceGetUser`. Two versions can therefore coexist even when both Go packages are explicitly named `user`; a stable path digest disambiguates the rare case where different paths normalize to the same prefix. When same-named Services coexist, unbind one precisely with `--package`.
+Server bindings are identified by `package + Service`. Each binding receives its own user-owned handler; `UserService.GetUser` defaults to `UserHandler.GetUser`, so protobuf RPC names stay short and do not collide on the application `Service`. If same-named Services coexist, give later bindings distinct names such as `--handler-name UserV2`, and unbind one precisely with `--package`.
+
+`jgo doctor` validates the complete Handler RPC signature and reports expected/actual forms on mismatch. `jgo list` displays the concrete `UserHandler`, `UserV2Handler`, or other custom Handler entry point. v0.5 changes external servers only; local protobuf implementations remain `Service.<Service><Method>` rather than expanding this release into a unified Handler migration.
+
+The v0.5 CLI uses RPC manifest version 2. A v0.4 manifest is rejected instead of rewriting user implementations: back up and remove `.jgo/rpc.json`, recreate the bindings, then move each old `Service.<generated-name>` body into `<Handler>.<RPC>`.
 
 Permanent role/dependency cleanup is Service-grained:
 

@@ -6,6 +6,11 @@ export GOWORK=off
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 temporary_root="$(mktemp -d)"
+# goenv overrides GOCACHE unless its cache isolation is disabled. Keep this
+# temporary-project verification out of the developer's persistent build cache;
+# cleanup below removes the cache together with all generated projects.
+export GOENV_DISABLE_GOCACHE=1
+export GOCACHE="${temporary_root}/go-build"
 server_pid=""
 caller_pid=""
 cleanup() {
@@ -56,7 +61,7 @@ for project_type in web grpc mixed proto; do
   if [[ "${project_type}" == "proto" ]]; then
     ! grep -q 'github.com/eyesofblue/jgo' "${project_root}/go.mod"
   else
-    grep -q 'github.com/eyesofblue/jgo v0.4.1' "${project_root}/go.mod"
+    grep -q 'github.com/eyesofblue/jgo v0.5.0' "${project_root}/go.mod"
   fi
 
   if [[ "${project_type}" == "web" || "${project_type}" == "mixed" ]]; then
@@ -164,16 +169,32 @@ cp "${repository_root}/scripts/testdata/e2e_service.proto" \
   "${temporary_root}/jgo" rpc server bind DemoProtoService \
     --module example.com/demo-proto@v0.1.0
   "${temporary_root}/jgo" rpc server bind AdminService \
-    --module example.com/demo-proto@v0.1.0
+    --module example.com/demo-proto@v0.1.0 \
+    --handler-name Administration
+  get_user_stub="internal/service/demo_proto_handler_get_user.go"
+  cp "${get_user_stub}" "${temporary_root}/demo_proto_handler_get_user.go"
+  cp "${repository_root}/scripts/testdata/e2e_grpc_wrong_signature.go" "${get_user_stub}"
+  if doctor_output="$("${temporary_root}/jgo" doctor 2>&1)"; then
+    echo "doctor accepted an incompatible external Handler signature" >&2
+    exit 1
+  fi
+  [[ "${doctor_output}" == *'expected: func (h *DemoProtoHandler) GetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, error)'* ]]
+  [[ "${doctor_output}" == *'actual:'* ]]
+  [[ "${doctor_output}" == *'pb.WrongRequest'* ]]
+  cp "${temporary_root}/demo_proto_handler_get_user.go" "${get_user_stub}"
   "${temporary_root}/jgo" doctor
   server_bindings="$("${temporary_root}/jgo" list)"
   [[ "${server_bindings}" == *external-server*DemoProtoService* ]]
+  [[ "${server_bindings}" == *external-server*DemoProtoHandler*DemoProtoService* ]]
+  [[ "${server_bindings}" == *external-server*AdministrationHandler*AdminService* ]]
 	  cp "${repository_root}/scripts/testdata/e2e_grpc_get_user.go" \
-	    internal/service/demo_proto_v1_demo_proto_service_get_user.go
+	    "${get_user_stub}"
   grep -q 'RegisterDemoProtoServiceServer' internal/transport/grpc/external.gen.go
   grep -q 'RegisterAdminServiceServer' internal/transport/grpc/external.gen.go
+  grep -q 'NewAdministrationHandler' internal/transport/grpc/external.gen.go
+  grep -q 'type AdministrationHandler struct' internal/service/administration_handler.go
   test "$(grep -c 'example.com/demo-proto/gen/pb/demo_proto/v1' internal/transport/grpc/external.gen.go)" = "1"
-  grep -q 'DemoProtoV1DemoProtoServiceGetUser' internal/service/demo_proto_v1_demo_proto_service_get_user.go
+  grep -q 'func (h \*DemoProtoHandler) GetUser' internal/service/demo_proto_handler_get_user.go
   go test ./...
   go build ./...
 )

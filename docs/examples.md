@@ -46,6 +46,8 @@ jgo rpc client bind UserService \
   --name user
 ```
 
+服务端默认生成 `UserHandler.GetUser`。若还要绑定另一个 package 中的 `UserService`，使用 `--package <import-path> --handler-name UserV2`，对应实现入口为 `UserV2Handler.GetUser`。
+
 协议尚未发布时，在三者父目录使用：
 
 ```bash

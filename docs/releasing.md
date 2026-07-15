@@ -2,7 +2,7 @@
 
 JGO 使用 Semantic Versioning，Git tag 使用 `vMAJOR.MINOR.PATCH`。
 
-当前主干候选版本为 `v0.4.1`。在维护者实际创建 tag 前，不得对外宣称已经发布。
+当前主干候选版本为 `v0.5.0`。在维护者实际创建 tag 前，不得对外宣称已经发布。
 
 - `MAJOR`：稳定版之后的不兼容公开 API 变更。
 - `MINOR`：向后兼容的新能力；在 `v0` 阶段也用于明确的接口演进。
@@ -12,8 +12,8 @@ JGO 使用 Semantic Versioning，Git tag 使用 `vMAJOR.MINOR.PATCH`。
 
 - patch 版本不删除命令、flag、配置字段或公开 Go API，也不改变现有 manifest 的含义。
 - minor 版本可以进行明确记录的接口演进；破坏性变化必须写入 Changelog 和迁移说明。
-- `v0.4.x` CLI 支持读取、检查和重新生成 `v0.4.x` 创建的项目。新 CLI 遇到未来 manifest version 必须拒绝操作，不能猜测或降级写入。
-- 生成项目默认依赖与 CLI 同版本的 JGO runtime；同一 `v0.4.x` 系列内允许用较新的 patch CLI 维护较早 patch 项目。
+- `v0.5.x` CLI 支持读取、检查和重新生成 manifest version 2 项目；version 1 必须按迁移说明手工升级。新 CLI 遇到未来 manifest version 必须拒绝操作，不能猜测或降级写入。
+- 生成项目默认依赖与 CLI 同版本的 JGO runtime；同一 `v0.5.x` 系列内允许用较新的 patch CLI 维护较早 patch 项目。
 - JGO 只维护当前 minor 系列。进入新的 minor 后，旧 minor 只接受阻塞升级或安全问题的修复。
 
 ## 发布前检查

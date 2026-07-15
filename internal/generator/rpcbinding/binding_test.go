@@ -36,11 +36,16 @@ func TestAddServerAndClientFromLocalReplacement(t *testing.T) {
 	}
 
 	assertContains(t, filepath.Join(service, "internal/transport/grpc/external.gen.go"), "RegisterUserServiceServer")
-	assertContains(t, filepath.Join(service, "internal/service/company_api_v1_user_service_get_user.go"), "CompanyApiV1UserServiceGetUser")
+	assertContains(t, filepath.Join(service, "internal/service/user_handler.go"), "type UserHandler struct")
+	assertContains(t, filepath.Join(service, "internal/service/user_handler.go"), "*Service")
+	assertContains(t, filepath.Join(service, "internal/service/user_handler_get_user.go"), "func (h *UserHandler) GetUser")
+	assertContains(t, filepath.Join(service, "internal/transport/grpc/external.gen.go"), "type userHandler interface")
+	assertContains(t, filepath.Join(service, "internal/transport/grpc/external.gen.go"), "server.handler.GetUser")
 	assertContains(t, filepath.Join(service, "internal/rpcclient/clients.gen.go"), "User pb0.UserServiceClient")
 	assertContains(t, filepath.Join(service, "configs/local.yaml"), "user:")
 	assertContains(t, filepath.Join(service, "configs/local.yaml"), "readiness: required")
-	assertContains(t, filepath.Join(service, ".jgo/rpc.json"), `"version": 1`)
+	assertContains(t, filepath.Join(service, ".jgo/rpc.json"), `"version": 2`)
+	assertContains(t, filepath.Join(service, ".jgo/rpc.json"), `"handler": "User"`)
 	assertContains(t, filepath.Join(service, "go.mod"), "example.com/company-api v0.1.1")
 }
 
@@ -77,7 +82,8 @@ func TestAddServerRollsBackWhenTidyFails(t *testing.T) {
 	assertFileEquals(t, filepath.Join(service, "go.mod"), goMod)
 	assertNotExist(t, filepath.Join(service, ".jgo", "rpc.json"))
 	assertNotExist(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"))
-	assertNotExist(t, filepath.Join(service, "internal", "service", "company_apiv1_user_service_get_user.go"))
+	assertNotExist(t, filepath.Join(service, "internal", "service", "user_handler.go"))
+	assertNotExist(t, filepath.Join(service, "internal", "service", "user_handler_get_user.go"))
 }
 
 func TestAddClientRollsBackWhenTidyFails(t *testing.T) {
@@ -262,21 +268,6 @@ type StreamServiceServer interface {
   Watch(*GetUserRequest, grpc.ServerStreamingServer[*GetUserResponse]) error
   mustEmbedUnimplementedStreamServiceServer()
 }
-
-func TestBindServerRejectsGeneratedServiceFileNameCollision(t *testing.T) {
-	protocol := fakeProtocolModule(t)
-	path := filepath.Join(protocol, "gen", "pb", "company_api", "v1", "service_grpc.pb.go")
-	contents := strings.Replace(string(mustReadTestFile(t, path)),
-		"GetUser(context.Context, *GetUserRequest) (*GetUserResponse, error)",
-		"GetURL(context.Context, *GetUserRequest) (*GetUserResponse, error)\n  GetUrl(context.Context, *GetUserRequest) (*GetUserResponse, error)", 1)
-	writeTestFile(t, path, contents)
-	service := fakeServiceProject(t, protocol)
-	_, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true})
-	if err == nil || !strings.Contains(err.Error(), "same service file") {
-		t.Fatalf("BindServer() error = %v", err)
-	}
-	assertNotExist(t, filepath.Join(service, ".jgo", "rpc.json"))
-}
 `
 	writeTestFile(t, path, contents)
 	service := fakeServiceProject(t, protocol)
@@ -286,6 +277,21 @@ func TestBindServerRejectsGeneratedServiceFileNameCollision(t *testing.T) {
 	if _, err := BindClient(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "StreamService", Name: "stream", SkipTidy: true}); err == nil || !strings.Contains(err.Error(), "streaming") {
 		t.Fatalf("streaming bind error = %v", err)
 	}
+}
+
+func TestHandlerStubNamesKeepInitialismMethodsDistinct(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	path := filepath.Join(protocol, "gen", "pb", "company_api", "v1", "service_grpc.pb.go")
+	contents := strings.ReplaceAll(string(mustReadTestFile(t, path)),
+		"GetUser(context.Context, *GetUserRequest) (*GetUserResponse, error)",
+		"GetURL(context.Context, *GetUserRequest) (*GetUserResponse, error)\n  GetUrl(context.Context, *GetUserRequest) (*GetUserResponse, error)")
+	writeTestFile(t, path, contents)
+	service := fakeServiceProject(t, protocol)
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, filepath.Join(service, "internal", "service", "user_handler_get_u_r_l.go"), "GetURL")
+	assertContains(t, filepath.Join(service, "internal", "service", "user_handler_get_url.go"), "GetUrl")
 }
 
 func TestBindClientCompileFailureRollsBackAllManagedFiles(t *testing.T) {
@@ -361,12 +367,16 @@ func TestUnbindServerKeepsUserOwnedImplementation(t *testing.T) {
 	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService"}); err != nil {
 		t.Fatal(err)
 	}
-	stub := filepath.Join(service, "internal", "service", "company_api_v1_user_service_get_user.go")
+	handler := filepath.Join(service, "internal", "service", "user_handler.go")
+	stub := filepath.Join(service, "internal", "service", "user_handler_get_user.go")
 	if err := UnbindServer(service, "UserService"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(stub); err != nil {
 		t.Fatalf("user-owned implementation was removed: %v", err)
+	}
+	if _, err := os.Stat(handler); err != nil {
+		t.Fatalf("user-owned handler was removed: %v", err)
 	}
 	assertContains(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"), "func registerExternal(grpc.ServiceRegistrar, *service.Service) {}")
 	manifest := string(mustReadTestFile(t, filepath.Join(service, ".jgo", "rpc.json")))
@@ -375,38 +385,26 @@ func TestUnbindServerKeepsUserOwnedImplementation(t *testing.T) {
 	}
 }
 
-func TestServerBindingsAllowSameServiceAcrossPackages(t *testing.T) {
+func TestServerBindingsRequireDistinctHandlersForSameService(t *testing.T) {
 	protocol := fakeProtocolModule(t)
 	copyGeneratedService(t, protocol, "gen/pb/company_api/v2/service_grpc.pb.go", "company_apiv2")
 	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
 	v1 := "example.com/company-api/gen/pb/company_api/v1"
 	v2 := "example.com/company-api/gen/pb/company_api/v2"
-	for _, packagePath := range []string{v1, v2} {
-		if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: packagePath, Service: "UserService", SkipTidy: true}); err != nil {
-			t.Fatalf("bind %s: %v", packagePath, err)
-		}
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: v1, Service: "UserService", SkipTidy: true}); err != nil {
+		t.Fatal(err)
 	}
-	legacy, err := loadManifest(service)
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: v2, Service: "UserService", SkipTidy: true}); err == nil || !strings.Contains(err.Error(), "handler UserHandler") {
+		t.Fatalf("default handler collision error = %v", err)
+	}
+	second, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: v2, Service: "UserService", HandlerName: "UserV2", SkipTidy: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for bindingIndex := range legacy.Servers {
-		for methodIndex := range legacy.Servers[bindingIndex].Methods {
-			legacy.Servers[bindingIndex].Methods[methodIndex].Business = ""
-		}
+	if second.Handler != "UserV2" {
+		t.Fatalf("handler = %q", second.Handler)
 	}
-	if err := saveManifest(service, legacy); err != nil {
-		t.Fatal(err)
-	}
-	if changed, err := Generate(service); err != nil || !changed {
-		t.Fatalf("Generate() = %v, %v", changed, err)
-	}
-	manifest := string(mustReadTestFile(t, filepath.Join(service, ".jgo", "rpc.json")))
-	for _, expected := range []string{"CompanyApiV1UserServiceGetUser", "CompanyApiV2UserServiceGetUser"} {
-		if !strings.Contains(manifest, `"business": "`+expected+`"`) {
-			t.Fatalf("manifest lacks %s:\n%s", expected, manifest)
-		}
-	}
+	assertContains(t, filepath.Join(service, "internal", "service", "user_v2_handler_get_user.go"), "func (h *UserV2Handler) GetUser")
 	assertOccurrenceCount(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"), "RegisterUserServiceServer", 2)
 	if err := UnbindServer(service, "UserService"); err == nil || !strings.Contains(err.Error(), "multiple packages") {
 		t.Fatalf("ambiguous UnbindServer() error = %v", err)
@@ -414,129 +412,338 @@ func TestServerBindingsAllowSameServiceAcrossPackages(t *testing.T) {
 	if err := UnbindServer(service, "UserService", v1); err != nil {
 		t.Fatal(err)
 	}
+	assertContains(t, filepath.Join(service, "internal", "service", "user_handler.go"), "type UserHandler struct")
+	assertContains(t, filepath.Join(service, "internal", "service", "user_v2_handler.go"), "type UserV2Handler struct")
 	assertContains(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"), v2)
 	if strings.Contains(string(mustReadTestFile(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"))), v1) {
 		t.Fatal("v1 binding remains after package-qualified unbind")
 	}
 }
 
-func TestServerBindingsWithSameGoPackageUseImportPathQualifiedBusinessNames(t *testing.T) {
+func TestBindServerPreservesAndNormalizesExplicitHandlerName(t *testing.T) {
 	protocol := fakeProtocolModule(t)
-	copyGeneratedService(t, protocol, "gen/pb/company_api/v2/service_grpc.pb.go", "company_apiv1")
 	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
-	for _, packagePath := range []string{
-		"example.com/company-api/gen/pb/company_api/v1",
-		"example.com/company-api/gen/pb/company_api/v2",
-	} {
-		if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: packagePath, Service: "UserService", SkipTidy: true}); err != nil {
-			t.Fatalf("bind %s: %v", packagePath, err)
-		}
+	first, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", HandlerName: "account_handler", SkipTidy: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	manifest := string(mustReadTestFile(t, filepath.Join(service, ".jgo", "rpc.json")))
-	for _, expected := range []string{"CompanyApiV1UserServiceGetUser", "CompanyApiV2UserServiceGetUser"} {
-		if !strings.Contains(manifest, `"business": "`+expected+`"`) {
-			t.Fatalf("manifest lacks %s:\n%s", expected, manifest)
-		}
+	second, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.2", Service: "UserService", SkipTidy: true})
+	if err != nil || first.Handler != "Account" || second.Handler != "Account" {
+		t.Fatalf("first=%+v second=%+v err=%v", first, second, err)
+	}
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.2", Service: "UserService", HandlerName: "Other", SkipTidy: true}); err == nil || !strings.Contains(err.Error(), "cannot be changed") {
+		t.Fatalf("rename error = %v", err)
 	}
 }
 
-func TestGenerateRejectsSilentLegacyBusinessMethodMigration(t *testing.T) {
+func TestGenerateRejectsVersionOneManifestWithMigrationGuidance(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	writeTestFile(t, filepath.Join(service, ".jgo", "rpc.json"), `{"version":1,"servers":[]}`)
+	if _, err := Generate(service); err == nil || !strings.Contains(err.Error(), "cannot be upgraded automatically") || !strings.Contains(err.Error(), "back up and remove .jgo/rpc.json") || !strings.Contains(err.Error(), "<Handler>.<rpc-method>") {
+		t.Fatalf("Generate() error = %v", err)
+	}
+}
+
+func TestBindServerRejectsInvalidHandlerName(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	for _, name := range []string{"---", "Handler"} {
+		service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+		if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", HandlerName: name, SkipTidy: true}); err == nil || !strings.Contains(err.Error(), "invalid handler name") {
+			t.Fatalf("BindServer(%q) error = %v", name, err)
+		}
+		assertNotExist(t, filepath.Join(service, ".jgo", "rpc.json"))
+	}
+}
+
+func TestDefaultHandlerStripsServiceSuffix(t *testing.T) {
+	for service, want := range map[string]string{
+		"UserService":    "User",
+		"AuditHandler":   "Audit",
+		"Service":        "Service",
+		"HandlerService": "HandlerService",
+		"Handler":        "RPC",
+	} {
+		if got := defaultServerHandlerName(service); got != want {
+			t.Errorf("defaultServerHandlerName(%q) = %q, want %q", service, got, want)
+		}
+	}
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	binding, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Handler != "User" {
+		t.Fatalf("handler = %q", binding.Handler)
+	}
+}
+
+func TestDefaultHandlerAlsoAvoidsDoubleHandlerSuffix(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	path := filepath.Join(protocol, "gen", "pb", "company_api", "v1", "service_grpc.pb.go")
+	contents := string(mustReadTestFile(t, path)) + `
+type AuditHandlerServer interface {
+  GetUser(context.Context, *GetUserRequest) (*GetUserResponse, error)
+  mustEmbedUnimplementedAuditHandlerServer()
+}
+type UnimplementedAuditHandlerServer struct{}
+func (UnimplementedAuditHandlerServer) mustEmbedUnimplementedAuditHandlerServer() {}
+func RegisterAuditHandlerServer(grpc.ServiceRegistrar, AuditHandlerServer) {}
+`
+	writeTestFile(t, path, contents)
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	binding, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "AuditHandler", SkipTidy: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Handler != "Audit" {
+		t.Fatalf("handler = %q", binding.Handler)
+	}
+	assertContains(t, filepath.Join(service, "internal", "service", "audit_handler.go"), "type AuditHandler struct")
+}
+
+func TestRPCNamedHandlerDoesNotCollideWithHandlerDeclarationFile(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	path := filepath.Join(protocol, "gen", "pb", "company_api", "v1", "service_grpc.pb.go")
+	writeTestFile(t, path, strings.ReplaceAll(string(mustReadTestFile(t, path)), "GetUser", "Handler"))
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, filepath.Join(service, "internal", "service", "user_handler.go"), "type UserHandler struct")
+	assertContains(t, filepath.Join(service, "internal", "service", "user_handler_handler.go"), "func (h *UserHandler) Handler")
+}
+
+func TestBindServerReusesCompleteUserOwnedHandler(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	customPath := filepath.Join(service, "internal", "service", "custom_user_handler.go")
+	custom := `package service
+
+import (
+  "context"
+  pb "example.com/company-api/gen/pb/company_api/v1"
+)
+
+type UserHandler struct { *Service }
+func NewUserHandler(application *Service) *UserHandler { return &UserHandler{Service: application} }
+func (h *UserHandler) GetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, error) { return &pb.GetUserResponse{}, nil }
+`
+	writeTestFile(t, customPath, custom)
+	before := mustReadTestFile(t, customPath)
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+		t.Fatal(err)
+	}
+	assertFileEquals(t, customPath, before)
+	assertNotExist(t, filepath.Join(service, "internal", "service", "user_handler.go"))
+	assertNotExist(t, filepath.Join(service, "internal", "service", "user_handler_get_user.go"))
+	if err := Validate(service); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestBindServerRejectsIncompleteExistingHandlerAndRollsBack(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	writeTestFile(t, filepath.Join(service, "internal", "service", "custom_user_handler.go"), "package service\n\ntype UserHandler struct { *Service }\n")
+	externalPath := filepath.Join(service, "internal", "transport", "grpc", "external.gen.go")
+	beforeExternal := mustReadTestFile(t, externalPath)
+	beforeMod := mustReadTestFile(t, filepath.Join(service, "go.mod"))
+	_, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true})
+	if err == nil || !strings.Contains(err.Error(), "NewUserHandler") || !strings.Contains(err.Error(), "func(*Service) *UserHandler") {
+		t.Fatalf("BindServer() error = %v", err)
+	}
+	assertFileEquals(t, externalPath, beforeExternal)
+	assertFileEquals(t, filepath.Join(service, "go.mod"), beforeMod)
+	assertNotExist(t, filepath.Join(service, ".jgo", "rpc.json"))
+	assertNotExist(t, filepath.Join(service, "internal", "service", "user_handler_get_user.go"))
+}
+
+func TestBindServerRejectsWrongExistingHandlerConstructorSignature(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	writeTestFile(t, filepath.Join(service, "internal", "service", "custom_user_handler.go"), `package service
+
+type UserHandler struct { *Service }
+func NewUserHandler(*Service) *Service { return nil }
+`)
+	_, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true})
+	if err == nil || !strings.Contains(err.Error(), "func(*Service) *UserHandler") {
+		t.Fatalf("BindServer() error = %v", err)
+	}
+	assertNotExist(t, filepath.Join(service, ".jgo", "rpc.json"))
+}
+
+func TestBindServerRejectsUnexpectedPackageInServiceDirectory(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+	writeTestFile(t, filepath.Join(service, "internal", "service", "wrong_package.go"), "package other\n\ntype UserHandler struct{}\n")
+	_, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true})
+	if err == nil || !strings.Contains(err.Error(), "must contain only package service") || !strings.Contains(err.Error(), "other, service") {
+		t.Fatalf("BindServer() error = %v", err)
+	}
+	assertNotExist(t, filepath.Join(service, ".jgo", "rpc.json"))
+}
+
+func TestValidateRejectsMissingUserOwnedHandlerParts(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	for _, test := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "handler declaration", path: "user_handler.go", want: "handler type UserHandler is missing"},
+		{name: "method", path: "user_handler_get_user.go", want: "UserHandler.GetUser is missing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+			if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(service, "internal", "service", test.path)); err != nil {
+				t.Fatal(err)
+			}
+			if err := Validate(service); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsIncompatibleUserOwnedHandlerMethodSignatures(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	tests := []struct {
+		name        string
+		signature   string
+		actual      string
+		pbImport    string
+		declaration string
+	}{
+		{name: "value receiver", signature: "func (h UserHandler) GetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, error)", actual: "func (h UserHandler) GetUser"},
+		{name: "wrong context", signature: "func (h *UserHandler) GetUser(string, *pb.GetUserRequest) (*pb.GetUserResponse, error)", actual: "GetUser(string"},
+		{name: "wrong request", signature: "func (h *UserHandler) GetUser(context.Context, *pb.WrongRequest) (*pb.GetUserResponse, error)", actual: "*pb.WrongRequest"},
+		{name: "request is not pointer", signature: "func (h *UserHandler) GetUser(context.Context, pb.GetUserRequest) (*pb.GetUserResponse, error)", actual: "pb.GetUserRequest"},
+		{name: "wrong response", signature: "func (h *UserHandler) GetUser(context.Context, *pb.GetUserRequest) (*pb.WrongResponse, error)", actual: "*pb.WrongResponse"},
+		{name: "response is not pointer", signature: "func (h *UserHandler) GetUser(context.Context, *pb.GetUserRequest) (pb.GetUserResponse, error)", actual: "pb.GetUserResponse"},
+		{name: "wrong error", signature: "func (h *UserHandler) GetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, string)", actual: "string"},
+		{name: "extra parameter", signature: "func (h *UserHandler) GetUser(context.Context, *pb.GetUserRequest, bool) (*pb.GetUserResponse, error)", actual: "bool"},
+		{name: "extra result", signature: "func (h *UserHandler) GetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, error, bool)", actual: "bool"},
+		{name: "wrong protobuf package", signature: "func (h *UserHandler) GetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, error)", actual: `pb="example.com/other-api/gen/pb/company_api/v1"`, pbImport: "example.com/other-api/gen/pb/company_api/v1"},
+		{name: "shadowed error", signature: "func (h *UserHandler) GetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, error)", actual: `shadows predeclared "error"`, declaration: "type error string\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+			if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(service, "internal", "service", "user_handler_get_user.go")
+			pbImport := test.pbImport
+			if pbImport == "" {
+				pbImport = "example.com/company-api/gen/pb/company_api/v1"
+			}
+			writeTestFile(t, path, `package service
+
+import (
+  "context"
+  pb "`+pbImport+`"
+)
+
+`+test.declaration+test.signature+` { return nil, nil }
+`)
+			err := Validate(service)
+			if err == nil || !strings.Contains(err.Error(), "UserHandler.GetUser has incompatible signature") || !strings.Contains(err.Error(), "expected: func (h *UserHandler) GetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, error)") || !strings.Contains(err.Error(), "actual:") || !strings.Contains(err.Error(), test.actual) {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateAcceptsEquivalentHandlerSignatureImportAliasesAndNames(t *testing.T) {
+	protocol := fakeProtocolModule(t)
+	for _, test := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "explicit aliases",
+			source: `package service
+
+import (
+  ctx "context"
+  userv1 "example.com/company-api/gen/pb/company_api/v1"
+)
+
+func (h *UserHandler) GetUser(context ctx.Context, request *userv1.GetUserRequest) (response *userv1.GetUserResponse, err error) { return nil, nil }
+`,
+		},
+		{
+			name: "protobuf declared package name",
+			source: `package service
+
+import (
+  "context"
+  "example.com/company-api/gen/pb/company_api/v1"
+)
+
+func (h *UserHandler) GetUser(context.Context, *company_apiv1.GetUserRequest) (*company_apiv1.GetUserResponse, error) { return nil, nil }
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
+			if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
+				t.Fatal(err)
+			}
+			writeTestFile(t, filepath.Join(service, "internal", "service", "user_handler_get_user.go"), test.source)
+			if err := Validate(service); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestGenerateRejectsIncompatibleExistingHandlerMethodWithoutOverwritingIt(t *testing.T) {
 	protocol := fakeProtocolModule(t)
 	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
 	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
 		t.Fatal(err)
 	}
-	state, err := loadManifest(service)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state.Servers[0].Methods[0].Business = ""
-	if err := saveManifest(service, state); err != nil {
-		t.Fatal(err)
-	}
-	qualifiedStub := filepath.Join(service, "internal", "service", "company_api_v1_user_service_get_user.go")
-	if err := os.Remove(qualifiedStub); err != nil {
-		t.Fatal(err)
-	}
-	legacy := filepath.Join(service, "internal", "service", "legacy_user.go")
-	if err := os.WriteFile(legacy, []byte("package service\n\nfunc (*Service) UserServiceGetUser() {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Generate(service); err == nil || !strings.Contains(err.Error(), "rename it to Service.CompanyApiV1UserServiceGetUser") {
-		t.Fatalf("Generate() error = %v", err)
-	}
-	if err := Validate(service); err == nil || !strings.Contains(err.Error(), "rename it to Service.CompanyApiV1UserServiceGetUser") {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	if err := os.WriteFile(legacy, []byte(`package service
+	path := filepath.Join(service, "internal", "service", "user_handler_get_user.go")
+	wrong := []byte(`package service
 
 import (
-	"context"
-	pb "example.com/company-api/gen/pb/company_api/v1"
+  "context"
+  pb "example.com/company-api/gen/pb/company_api/v1"
 )
 
-func (*Service) CompanyApiV1UserServiceGetUser(context.Context, *pb.GetUserRequest) (*pb.GetUserResponse, error) {
-	return nil, nil
-}
-`), 0o644); err != nil {
-		t.Fatal(err)
+func (h *UserHandler) GetUser(context.Context, *pb.WrongRequest) (*pb.GetUserResponse, error) { return nil, nil }
+`)
+	writeTestFile(t, path, string(wrong))
+	if _, err := Generate(service); err == nil || !strings.Contains(err.Error(), "UserHandler.GetUser has incompatible signature") {
+		t.Fatalf("Generate() error = %v", err)
 	}
-	if changed, err := Generate(service); err != nil || !changed {
-		t.Fatalf("Generate() after migration = %v, %v", changed, err)
-	}
-	if _, err := os.Stat(qualifiedStub); !os.IsNotExist(err) {
-		t.Fatalf("generator created a duplicate qualified stub: %v", err)
-	}
-	assertContains(t, filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"), "application.CompanyApiV1UserServiceGetUser")
-	command := exec.Command("go", "test", "./...")
-	command.Dir = service
-	command.Env = append(os.Environ(), "GOWORK=off")
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("migrated project does not compile: %v\n%s", err, output)
-	}
+	assertFileEquals(t, path, wrong)
 }
 
-func TestImportPathNormalizationCollisionsUseStableSuffix(t *testing.T) {
+func TestGenerateRecreatesMissingUserOwnedHandlerParts(t *testing.T) {
 	protocol := fakeProtocolModule(t)
-	copyGeneratedService(t, protocol, "gen/pb/gen/company_api/v1/service_grpc.pb.go", "company_apiv1")
 	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
-	packages := []string{
-		"example.com/company-api/gen/pb/company_api/v1",
-		"example.com/company-api/gen/pb/gen/company_api/v1",
-	}
-	for _, packagePath := range packages {
-		if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: packagePath, Service: "UserService", SkipTidy: true}); err != nil {
-			t.Fatalf("bind %s: %v", packagePath, err)
-		}
-	}
-	state, err := loadManifest(service)
-	if err != nil {
+	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
 		t.Fatal(err)
 	}
-	if len(state.Servers) != 2 || state.Servers[0].Methods[0].Business == state.Servers[1].Methods[0].Business {
-		t.Fatalf("colliding paths were not disambiguated: %+v", state.Servers)
-	}
-	foundSuffix := false
-	for _, binding := range state.Servers {
-		if strings.Contains(binding.Methods[0].Business, "Path") {
-			foundSuffix = true
+	for _, name := range []string{"user_handler.go", "user_handler_get_user.go"} {
+		if err := os.Remove(filepath.Join(service, "internal", "service", name)); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if !foundSuffix {
-		t.Fatalf("collision did not receive a stable path suffix: %+v", state.Servers)
+	changed, err := Generate(service)
+	if err != nil || !changed {
+		t.Fatalf("Generate() = %v, %v", changed, err)
 	}
-}
-
-func TestImportPathPunctuationProducesValidBusinessName(t *testing.T) {
-	protocol := fakeProtocolModule(t)
-	copyGeneratedService(t, protocol, "gen/pb/company.api/v3/service_grpc.pb.go", "company_apiv3")
-	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
-	binding, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Package: "example.com/company-api/gen/pb/company.api/v3", Service: "UserService", SkipTidy: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := binding.Methods[0].Business; got != "CompanyApiV3UserServiceGetUser" {
-		t.Fatalf("business name = %q", got)
+	if err := Validate(service); err != nil {
+		t.Fatalf("Validate() after Generate = %v", err)
 	}
 }
 
@@ -562,7 +769,7 @@ func TestValidateRejectsGeneratedBindingContentDrift(t *testing.T) {
 	}{
 		{
 			name: "server registration", path: filepath.Join(service, "internal", "transport", "grpc", "external.gen.go"),
-			old:         "pb0.RegisterUserServiceServer(registrar, &userServiceExternalServer0{application: application})",
+			old:         "pb0.RegisterUserServiceServer(registrar, &userServiceExternalServer0{handler: service.NewUserHandler(application)})",
 			replacement: "_ = registrar",
 			want:        "generated server bindings differ",
 		},
@@ -747,7 +954,7 @@ func TestMutateFilesRollbackDoesNotFollowIntroducedParentSymlink(t *testing.T) {
 	}
 }
 
-func TestManifestRejectsInvalidBusinessMethodName(t *testing.T) {
+func TestManifestRejectsInvalidHandlerName(t *testing.T) {
 	protocol := fakeProtocolModule(t)
 	service := generatedBindingProject(t, projectgen.TypeGRPC, protocol)
 	if _, err := BindServer(BindConfig{Root: service, ModuleSpec: "example.com/company-api@v0.1.1", Service: "UserService", SkipTidy: true}); err != nil {
@@ -757,19 +964,46 @@ func TestManifestRejectsInvalidBusinessMethodName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.Servers[0].Methods[0].Business = "unexportedMethod"
+	state.Servers[0].Handler = "unexported"
 	if err := saveManifest(service, state); err != nil {
 		t.Fatal(err)
 	}
-	if err := Validate(service); err == nil || !strings.Contains(err.Error(), "exported Go identifier") {
+	if err := Validate(service); err == nil || !strings.Contains(err.Error(), "invalid handler name") {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	state.Servers[0].Methods[0].Business = "WrongExportedName"
+	state.Servers[0].Handler = "UserHandler"
 	if err := saveManifest(service, state); err != nil {
 		t.Fatal(err)
 	}
-	if err := Validate(service); err == nil || !strings.Contains(err.Error(), "does not match deterministic name") {
-		t.Fatalf("Validate() deterministic-name error = %v", err)
+	if _, err := List(service); err == nil || !strings.Contains(err.Error(), "invalid handler name") {
+		t.Fatalf("List() error = %v", err)
+	}
+}
+
+func TestManifestRejectsInvalidOrDuplicateMethodMetadata(t *testing.T) {
+	binding := Binding{
+		Module: "example.com/company-api", Package: "example.com/company-api/gen/pb/company_api/v1",
+		GoPackage: "company_apiv1", Service: "UserService", Handler: "User",
+		Methods: []Method{{Name: "GetUser", Request: "GetUserRequest", Response: "GetUserResponse"}},
+	}
+	tests := []struct {
+		name   string
+		change func(*Binding)
+		want   string
+	}{
+		{name: "unexported method", change: func(value *Binding) { value.Methods[0].Name = "getUser" }, want: "invalid method metadata"},
+		{name: "missing request", change: func(value *Binding) { value.Methods[0].Request = "" }, want: "invalid method metadata"},
+		{name: "duplicate method", change: func(value *Binding) { value.Methods = append(value.Methods, value.Methods[0]) }, want: "duplicate method GetUser"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := binding
+			candidate.Methods = append([]Method(nil), binding.Methods...)
+			test.change(&candidate)
+			if err := validateManifest(manifest{Version: manifestVersion, Servers: []Binding{candidate}}); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateManifest() error = %v", err)
+			}
+		})
 	}
 }
 
@@ -818,7 +1052,7 @@ func TestManifestRejectsGeneratedClientFieldCollisions(t *testing.T) {
 	protocol := fakeProtocolModule(t)
 	service := fakeServiceProject(t, protocol)
 	writeTestFile(t, filepath.Join(service, ".jgo", "rpc.json"), `{
-  "version": 1,
+  "version": 2,
   "clients": [
     {"name":"user_primary","module":"example.com/company-api","version":"v0.1.1","package":"example.com/company-api/gen/pb/company_api/v1","go_package":"company_apiv1","service":"UserService","methods":[]},
     {"name":"userPrimary","module":"example.com/company-api","version":"v0.1.1","package":"example.com/company-api/gen/pb/company_api/v1","go_package":"company_apiv1","service":"UserService","methods":[]}
@@ -833,9 +1067,9 @@ func TestGenerateRejectsServerManifestInWebProject(t *testing.T) {
 	protocol := fakeProtocolModule(t)
 	service := generatedBindingProject(t, projectgen.TypeWeb, protocol)
 	writeTestFile(t, filepath.Join(service, ".jgo", "rpc.json"), `{
-  "version": 1,
+  "version": 2,
   "servers": [
-    {"module":"example.com/company-api","version":"v0.1.1","package":"example.com/company-api/gen/pb/company_api/v1","go_package":"company_apiv1","service":"UserService","methods":[{"name":"GetUser","request":"GetUserRequest","response":"GetUserResponse"}]}
+    {"module":"example.com/company-api","version":"v0.1.1","package":"example.com/company-api/gen/pb/company_api/v1","go_package":"company_apiv1","service":"UserService","handler":"User","methods":[{"name":"GetUser","request":"GetUserRequest","response":"GetUserResponse"}]}
   ]
 }`)
 	if _, err := Generate(service); err == nil || !strings.Contains(err.Error(), "require a grpc or mixed project") {

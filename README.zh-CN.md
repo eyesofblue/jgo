@@ -4,7 +4,7 @@
 
 JGO 是一个不依赖私有基础设施的 Go 服务框架和脚手架，支持 RPC 风格的 HTTP/JSON API 与 gRPC/protobuf。数据库、Redis、MQ、服务发现、认证中心等能力通过标准扩展接口接入。
 
-Module：`github.com/eyesofblue/jgo`。当前主干面向 `v0.4.1`。
+Module：`github.com/eyesofblue/jgo`。当前主干面向 `v0.5.0`。
 
 ## 前置依赖
 
@@ -13,7 +13,7 @@ Module：`github.com/eyesofblue/jgo`。当前主干面向 `v0.4.1`。
 - 只绑定公共协议的 external-only gRPC 项目不需要安装 Buf。
 
 ```bash
-go install github.com/eyesofblue/jgo/cmd/jgo@v0.4.1
+go install github.com/eyesofblue/jgo/cmd/jgo@v0.5.0
 jgo --version
 
 # 当前 Go 环境第一次开发本地 protobuf 时执行一次
@@ -137,12 +137,16 @@ jgo rpc client bind UserService \
 
 `--name` 是稳定的配置 key 和代码字段名。地址、超时、TLS、readiness 直接修改 `configs/local.yaml`。重复执行相同 `bind` 是幂等的；同一 package 下可从 `v0.1.0` 更新到 `v0.2.0`，不会覆盖运行配置。
 
-服务端 binding 以 `package + Service` 为唯一身份，因此 `company.user.v1.UserService` 与 `company.user.v2.UserService` 可以同时注册。外部协议业务方法从完整 import path 提取稳定前缀，例如 `company/user/v1.UserService.GetUser` 映射为 `Service.CompanyUserV1UserServiceGetUser`；即使两个版本的 Go package 都命名为 `user` 也不会冲突。若两个不同 import path 规范化后仍同名，后绑定项会增加稳定的 path 摘要。同名 Service 并存时，解绑必须指定 package：
+服务端 binding 以 `package + Service` 为唯一身份。每个 binding 使用独立、由用户持有的 Handler；例如 `UserService.GetUser` 默认实现为 `UserHandler.GetUser`，不再把长方法名堆到应用 `Service` 上。同名 Service 并存时，为后续 binding 显式指定不同名称，例如 `--handler-name UserV2`，解绑仍需指定 package：
 
 ```bash
 jgo rpc server unbind UserService \
   --package example.com/company-api/gen/pb/company/user/v1
 ```
+
+`jgo doctor` 会校验 Handler 的完整 RPC 签名并在不匹配时展示 expected/actual；`jgo list` 会显示 `UserHandler`、`UserV2Handler` 等实际业务入口。v0.5 只调整 external server；本地 protobuf 仍使用 `Service.<Service><Method>`，暂不扩大到统一 Handler 迁移。
+
+v0.5 使用 RPC manifest version 2。v0.4 manifest 不会被自动改写；先备份并删除 `.jgo/rpc.json`，重新创建 server/client binding，再把原 `Service.<生成方法名>` 的实现移入 `<Handler>.<RPC>`。
 
 低频永久解除职责或依赖：
 

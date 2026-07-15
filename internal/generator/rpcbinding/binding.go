@@ -3,35 +3,34 @@ package rpcbinding
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/format"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 	"gopkg.in/yaml.v3"
 )
 
-const manifestVersion = 1
+const manifestVersion = 2
 
 type Method struct {
 	Name     string `json:"name"`
 	Request  string `json:"request"`
 	Response string `json:"response"`
-	Business string `json:"business,omitempty"`
 }
 
 type Binding struct {
@@ -41,6 +40,7 @@ type Binding struct {
 	Package     string   `json:"package"`
 	GoPackage   string   `json:"go_package"`
 	Service     string   `json:"service"`
+	Handler     string   `json:"handler,omitempty"`
 	Methods     []Method `json:"methods"`
 	Address     string   `json:"address,omitempty"`
 	unsupported string   `json:"-"`
@@ -72,15 +72,6 @@ func Validate(projectRoot string) error {
 	if err := validateManifest(state); err != nil {
 		return err
 	}
-	for _, binding := range state.Servers {
-		if !bindingHasLegacyBusinessNames(binding) {
-			continue
-		}
-		if err := validateLegacyServerMigration(root, binding); err != nil {
-			return err
-		}
-		return fmt.Errorf("rpc binding: %s.%s requires package-qualified business names; run jgo generate", binding.Package, binding.Service)
-	}
 	if len(state.Servers) == 0 && len(state.Clients) == 0 {
 		stale, staleErr := bindingOutputsStale(root)
 		if staleErr != nil {
@@ -103,12 +94,17 @@ func Validate(projectRoot string) error {
 	if err := validateGeneratedBindingFiles(root, state); err != nil {
 		return err
 	}
+	for _, binding := range state.Servers {
+		if err := validateServerHandler(root, binding, true); err != nil {
+			return err
+		}
+	}
 	for _, existing := range append(append([]Binding(nil), state.Servers...), state.Clients...) {
 		resolved, resolveErr := resolve(root, BindConfig{ModuleSpec: moduleSpec(existing), Package: existing.Package, Service: existing.Service})
 		if resolveErr != nil {
 			return resolveErr
 		}
-		preserveServerBusinessNames(&resolved, existing)
+		resolved.Handler = existing.Handler
 		if resolved.GoPackage != existing.GoPackage || !sameMethods(resolved.Methods, existing.Methods) {
 			return fmt.Errorf("rpc binding: %s.%s changed since the last bind; run jgo generate", existing.Package, existing.Service)
 		}
@@ -147,18 +143,35 @@ func validateGeneratedBindingFiles(root string, state manifest) error {
 
 func validateManifest(state manifest) error {
 	servers := make(map[string]struct{}, len(state.Servers))
+	handlers := make(map[string]string, len(state.Servers))
+	serviceFiles := make(map[string]string)
 	for _, binding := range state.Servers {
 		if strings.TrimSpace(binding.Module) == "" || strings.TrimSpace(binding.Package) == "" || strings.TrimSpace(binding.Service) == "" {
 			return errors.New("rpc binding: server manifest entry is incomplete")
+		}
+		if !validHandlerName(binding.Handler) {
+			return fmt.Errorf("rpc binding: server manifest has invalid handler name %q", binding.Handler)
 		}
 		key := serverBindingKey(binding)
 		if _, exists := servers[key]; exists {
 			return fmt.Errorf("rpc binding: duplicate server service %s.%s", binding.Package, binding.Service)
 		}
 		servers[key] = struct{}{}
-	}
-	if err := validateServerMethodNames(state.Servers); err != nil {
-		return err
+		handlerType := serverHandlerType(binding)
+		if existing, exists := handlers[handlerType]; exists {
+			return fmt.Errorf("rpc binding: handler %s is used by both %s and %s; choose a different --handler-name", handlerType, existing, binding.Package+":"+binding.Service)
+		}
+		handlers[handlerType] = binding.Package + ":" + binding.Service
+		if err := validateBindingMethods(binding); err != nil {
+			return err
+		}
+		owner := binding.Package + ":" + binding.Service
+		for _, path := range append([]string{handlerDeclarationPath(binding)}, serverStubPaths(binding)...) {
+			if existing, exists := serviceFiles[path]; exists {
+				return fmt.Errorf("rpc binding: %s and %s map to the same service file %s", existing, owner, path)
+			}
+			serviceFiles[path] = owner
+		}
 	}
 	clients := make(map[string]struct{}, len(state.Clients))
 	fields := make(map[string]string, len(state.Clients))
@@ -175,47 +188,23 @@ func validateManifest(state manifest) error {
 			return fmt.Errorf("rpc binding: client names %q and %q conflict after Go field generation", existing, binding.Name)
 		}
 		fields[field] = binding.Name
+		if err := validateBindingMethods(binding); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func validateServerMethodNames(bindings []Binding) error {
-	baseCounts := make(map[string]int)
-	for _, binding := range bindings {
-		for _, method := range binding.Methods {
-			baseCounts[qualifiedServerBusinessName(binding, method)]++
+func validateBindingMethods(binding Binding) error {
+	methods := make(map[string]struct{}, len(binding.Methods))
+	for _, method := range binding.Methods {
+		if !token.IsIdentifier(method.Name) || !ast.IsExported(method.Name) || !token.IsIdentifier(method.Request) || !ast.IsExported(method.Request) || !token.IsIdentifier(method.Response) || !ast.IsExported(method.Response) {
+			return fmt.Errorf("rpc binding: %s.%s has invalid method metadata", binding.Package, binding.Service)
 		}
-	}
-	businessNames := make(map[string]string)
-	stubPaths := make(map[string]string)
-	for _, binding := range bindings {
-		for _, method := range binding.Methods {
-			owner := binding.Package + ":" + binding.Service + "." + method.Name
-			businessName := serverBusinessName(binding, method)
-			if !token.IsIdentifier(businessName) || !ast.IsExported(businessName) {
-				return fmt.Errorf("rpc binding: business method %q for %s must be an exported Go identifier", businessName, owner)
-			}
-			baseName := qualifiedServerBusinessName(binding, method)
-			collisionName := collisionServerBusinessName(binding, method)
-			if strings.TrimSpace(method.Business) != "" && method.Business != baseName && (baseCounts[baseName] == 1 || method.Business != collisionName) {
-				return fmt.Errorf("rpc binding: business method %q for %s does not match deterministic name %q", method.Business, owner, baseName)
-			}
-			// Legacy manifests do not yet contain the allocated business name.
-			// Defer collision allocation to Generate without making validation
-			// depend on manifest ordering.
-			if strings.TrimSpace(method.Business) == "" && baseCounts[baseName] > 1 {
-				continue
-			}
-			if existing, exists := businessNames[businessName]; exists && existing != owner {
-				return fmt.Errorf("rpc binding: %s and %s map to the same business method %s", existing, owner, businessName)
-			}
-			businessNames[businessName] = owner
-			stubPath := snake(businessName)
-			if existing, exists := stubPaths[stubPath]; exists && existing != owner {
-				return fmt.Errorf("rpc binding: %s and %s map to the same service file %s.go", existing, owner, stubPath)
-			}
-			stubPaths[stubPath] = owner
+		if _, exists := methods[method.Name]; exists {
+			return fmt.Errorf("rpc binding: %s.%s contains duplicate method %s", binding.Package, binding.Service, method.Name)
 		}
+		methods[method.Name] = struct{}{}
 	}
 	return nil
 }
@@ -236,172 +225,373 @@ func serverBindingKey(binding Binding) string {
 	return binding.Package + "\x00" + binding.Service
 }
 
-func serverBusinessName(binding Binding, method Method) string {
-	if strings.TrimSpace(method.Business) != "" {
-		return method.Business
-	}
-	return qualifiedServerBusinessName(binding, method)
-}
-
-func preserveServerBusinessNames(resolved *Binding, existing Binding) {
-	if resolved == nil || serverBindingKey(*resolved) != serverBindingKey(existing) {
-		return
-	}
-	names := make(map[string]string, len(existing.Methods))
-	for _, method := range existing.Methods {
-		names[method.Name] = method.Business
-	}
-	for index := range resolved.Methods {
-		resolved.Methods[index].Business = names[resolved.Methods[index].Name]
-	}
-}
-
-func assignServerBusinessNames(bindings []Binding) {
-	occupied := make(map[string]struct{})
-	for _, binding := range bindings {
-		for _, method := range binding.Methods {
-			if strings.TrimSpace(method.Business) != "" {
-				occupied[method.Business] = struct{}{}
-			}
+func defaultServerHandlerName(service string) string {
+	original := strings.TrimSpace(service)
+	base := strings.TrimSuffix(original, "Service")
+	if strings.HasSuffix(base, "Handler") {
+		base = strings.TrimSuffix(base, "Handler")
+		if base == "" {
+			base = original
 		}
 	}
-	for bindingIndex := range bindings {
-		for methodIndex := range bindings[bindingIndex].Methods {
-			binding := bindings[bindingIndex]
-			method := bindings[bindingIndex].Methods[methodIndex]
-			if strings.TrimSpace(method.Business) == "" {
-				name := qualifiedServerBusinessName(binding, method)
-				if _, exists := occupied[name]; exists {
-					name = collisionServerBusinessName(binding, method)
-				}
-				bindings[bindingIndex].Methods[methodIndex].Business = name
-				occupied[name] = struct{}{}
-			}
-		}
+	if base == "" {
+		base = original
 	}
+	if strings.HasSuffix(base, "Handler") {
+		base = "RPC"
+	}
+	return base
 }
 
-func qualifiedServerBusinessName(binding Binding, method Method) string {
-	prefix := packageBusinessPrefix(binding.Package)
-	if prefix == "" {
-		packageName := strings.Map(func(character rune) rune {
-			if unicode.IsLetter(character) || unicode.IsDigit(character) {
-				return character
-			}
-			return '_'
-		}, binding.GoPackage)
-		prefix = exported(packageName)
-	}
-	if prefix == "" {
-		prefix = "Protocol"
-	}
-	return prefix + binding.Service + method.Name
+func normalizeHandlerName(value string) string {
+	return strings.TrimSuffix(exported(strings.TrimSpace(value)), "Handler")
 }
 
-func collisionServerBusinessName(binding Binding, method Method) string {
-	prefix := packageBusinessPrefix(binding.Package)
-	if prefix == "" {
-		prefix = "Protocol"
-	}
-	digest := sha256.Sum256([]byte(binding.Package))
-	return fmt.Sprintf("%sPath%X%s%s", prefix, digest[:6], binding.Service, method.Name)
+func validHandlerName(value string) bool {
+	return token.IsIdentifier(value) && ast.IsExported(value) && !strings.HasSuffix(value, "Handler")
 }
 
-func packageBusinessPrefix(packagePath string) string {
-	parts := strings.Split(filepath.ToSlash(packagePath), "/")
-	if len(parts) > 1 && strings.Contains(parts[0], ".") {
-		parts = parts[1:]
-	}
-	var semantic []string
-	lastNormalized := ""
-	for _, part := range parts {
-		switch strings.ToLower(part) {
-		case "api", "gen", "pb", "proto":
-			continue
-		}
-		normalized := strings.Map(func(character rune) rune {
-			if unicode.IsLetter(character) || unicode.IsDigit(character) {
-				return unicode.ToLower(character)
-			}
-			return -1
-		}, part)
-		if part != "" && normalized != lastNormalized {
-			safe := strings.Map(func(character rune) rune {
-				if unicode.IsLetter(character) || unicode.IsDigit(character) {
-					return character
-				}
-				return '_'
-			}, part)
-			semantic = append(semantic, safe)
-			lastNormalized = normalized
-		}
-	}
-	prefix := exported(strings.Join(semantic, "_"))
-	if prefix != "" {
-		first, _ := utf8.DecodeRuneInString(prefix)
-		if unicode.IsDigit(first) {
-			prefix = "P" + prefix
-		}
-	}
-	return prefix
+func serverHandlerType(binding Binding) string { return binding.Handler + "Handler" }
+
+func serverHandlerConstructor(binding Binding) string { return "New" + serverHandlerType(binding) }
+
+func serverStubPath(binding Binding, method Method) string {
+	return snake(serverHandlerType(binding)) + "_" + snake(method.Name) + ".go"
 }
 
-func bindingHasLegacyBusinessNames(binding Binding) bool {
+func serverStubPaths(binding Binding) []string {
+	paths := make([]string, 0, len(binding.Methods))
 	for _, method := range binding.Methods {
-		if strings.TrimSpace(method.Business) == "" {
-			return true
+		paths = append(paths, serverStubPath(binding, method))
+	}
+	return paths
+}
+
+func handlerDeclarationPath(binding Binding) string {
+	return snake(serverHandlerType(binding)) + ".go"
+}
+
+type serviceMethodDeclaration struct {
+	function     *ast.FuncDecl
+	file         *ast.File
+	shadowsError bool
+}
+
+func serviceMethods(directory, receiverName string) (map[string][]serviceMethodDeclaration, error) {
+	pkg, err := parseServicePackage(directory)
+	if err != nil {
+		return nil, err
+	}
+	shadowsError := packageDeclaresName(pkg, "error")
+	methods := make(map[string][]serviceMethodDeclaration)
+	for _, file := range pkg.Files {
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv == nil || len(function.Recv.List) != 1 {
+				continue
+			}
+			receiver := unparen(function.Recv.List[0].Type)
+			if pointer, ok := receiver.(*ast.StarExpr); ok {
+				receiver = unparen(pointer.X)
+			}
+			if identifier, ok := receiver.(*ast.Ident); ok && identifier.Name == receiverName {
+				methods[function.Name.Name] = append(methods[function.Name.Name], serviceMethodDeclaration{function: function, file: file, shadowsError: shadowsError})
+			}
+		}
+	}
+	return methods, nil
+}
+
+func packageDeclaresName(pkg *ast.Package, name string) bool {
+	for _, file := range pkg.Files {
+		for _, declaration := range file.Decls {
+			switch value := declaration.(type) {
+			case *ast.FuncDecl:
+				if value.Recv == nil && value.Name.Name == name {
+					return true
+				}
+			case *ast.GenDecl:
+				for _, spec := range value.Specs {
+					switch item := spec.(type) {
+					case *ast.TypeSpec:
+						if item.Name.Name == name {
+							return true
+						}
+					case *ast.ValueSpec:
+						for _, declared := range item.Names {
+							if declared.Name == name {
+								return true
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 	return false
 }
 
-func validateLegacyServerMigration(root string, existing Binding) error {
-	if !bindingHasLegacyBusinessNames(existing) {
+func validateServiceMethodSignature(binding Binding, method Method, declaration serviceMethodDeclaration) error {
+	function := declaration.function
+	typeName := serverHandlerType(binding)
+	expected := fmt.Sprintf("func (h *%s) %s(context.Context, *pb.%s) (*pb.%s, error)", typeName, method.Name, method.Request, method.Response)
+	if validServiceMethodSignature(binding, method, declaration) {
 		return nil
 	}
-	methods, err := serviceMethodNames(filepath.Join(root, "internal", "service"))
-	if err != nil {
-		return err
+	actual := formatFunctionSignature(function)
+	var details []string
+	if imports := formatImportPaths(importPaths(declaration.file, binding)); imports != "" {
+		details = append(details, "imports: "+imports)
 	}
-	for _, method := range existing.Methods {
-		if strings.TrimSpace(method.Business) != "" {
-			continue
-		}
-		name := existing.Service + method.Name
-		if _, exists := methods[name]; exists {
-			return fmt.Errorf("rpc binding: legacy business method Service.%s is still implemented; rename it to Service.%s before running generate", name, qualifiedServerBusinessName(existing, method))
-		}
+	if declaration.shadowsError {
+		details = append(details, `package declaration shadows predeclared "error"`)
 	}
-	return nil
+	if len(details) > 0 {
+		actual += " [" + strings.Join(details, "; ") + "]"
+	}
+	return fmt.Errorf("rpc binding: user-owned handler method %s.%s has incompatible signature\nexpected: %s\nactual:   %s", typeName, method.Name, expected, actual)
 }
 
-func serviceMethodNames(directory string) (map[string]struct{}, error) {
-	set := token.NewFileSet()
-	packages, err := parser.ParseDir(set, directory, func(info os.FileInfo) bool {
+func validServiceMethodSignature(binding Binding, method Method, declaration serviceMethodDeclaration) bool {
+	function := declaration.function
+	if function == nil || function.Type.TypeParams != nil || function.Recv == nil || len(function.Recv.List) != 1 {
+		return false
+	}
+	receiver, ok := unparen(function.Recv.List[0].Type).(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	receiverType, ok := unparen(receiver.X).(*ast.Ident)
+	if !ok || receiverType.Name != serverHandlerType(binding) {
+		return false
+	}
+	parameters := fieldTypes(function.Type.Params)
+	results := fieldTypes(function.Type.Results)
+	if len(parameters) != 2 || len(results) != 2 {
+		return false
+	}
+	imports := importPaths(declaration.file, binding)
+	return selectorFromImport(parameters[0], imports, "context", "Context") &&
+		pointedSelectorFromImport(parameters[1], imports, binding.Package, method.Request) &&
+		pointedSelectorFromImport(results[0], imports, binding.Package, method.Response) &&
+		!declaration.shadowsError && imports["error"] == "" &&
+		isIdentifier(results[1], "error")
+}
+
+func fieldTypes(fields *ast.FieldList) []ast.Expr {
+	if fields == nil {
+		return nil
+	}
+	var result []ast.Expr
+	for _, field := range fields.List {
+		count := len(field.Names)
+		if count == 0 {
+			count = 1
+		}
+		for range count {
+			result = append(result, field.Type)
+		}
+	}
+	return result
+}
+
+func importPaths(file *ast.File, binding Binding) map[string]string {
+	result := make(map[string]string)
+	if file == nil {
+		return result
+	}
+	for _, spec := range file.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := ""
+		if spec.Name != nil {
+			name = spec.Name.Name
+		} else {
+			switch path {
+			case "context":
+				name = "context"
+			case binding.Package:
+				name = binding.GoPackage
+			}
+		}
+		if name != "" && name != "." && name != "_" {
+			result[name] = path
+		}
+	}
+	return result
+}
+
+func formatImportPaths(imports map[string]string) string {
+	names := make([]string, 0, len(imports))
+	for name := range imports {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s=%q", name, imports[name]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func selectorFromImport(expression ast.Expr, imports map[string]string, importPath, name string) bool {
+	selector, ok := unparen(expression).(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != name {
+		return false
+	}
+	prefix, ok := unparen(selector.X).(*ast.Ident)
+	return ok && imports[prefix.Name] == importPath
+}
+
+func pointedSelectorFromImport(expression ast.Expr, imports map[string]string, importPath, name string) bool {
+	pointer, ok := unparen(expression).(*ast.StarExpr)
+	return ok && selectorFromImport(pointer.X, imports, importPath, name)
+}
+
+func isIdentifier(expression ast.Expr, name string) bool {
+	identifier, ok := unparen(expression).(*ast.Ident)
+	return ok && identifier.Name == name
+}
+
+func formatFunctionSignature(function *ast.FuncDecl) string {
+	if function == nil {
+		return "<missing>"
+	}
+	copy := *function
+	copy.Doc = nil
+	copy.Body = nil
+	var output bytes.Buffer
+	if err := printer.Fprint(&output, token.NewFileSet(), &copy); err != nil {
+		return "<unprintable>"
+	}
+	return output.String()
+}
+
+func parseServicePackage(directory string) (*ast.Package, error) {
+	packages, err := parser.ParseDir(token.NewFileSet(), directory, func(info os.FileInfo) bool {
 		return !strings.HasSuffix(info.Name(), "_test.go")
 	}, 0)
 	if err != nil {
 		return nil, fmt.Errorf("rpc binding: parse service package: %w", err)
 	}
-	methods := make(map[string]struct{})
-	for _, pkg := range packages {
-		for _, file := range pkg.Files {
-			for _, declaration := range file.Decls {
-				function, ok := declaration.(*ast.FuncDecl)
-				if !ok || function.Recv == nil || len(function.Recv.List) != 1 {
-					continue
+	pkg, exists := packages["service"]
+	if !exists || len(packages) != 1 {
+		names := make([]string, 0, len(packages))
+		for name := range packages {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("rpc binding: internal/service must contain only package service, found %s", strings.Join(names, ", "))
+	}
+	return pkg, nil
+}
+
+type serviceHandlerDeclarations struct {
+	types     map[string]int
+	functions map[string][]*ast.FuncDecl
+	other     map[string]int
+}
+
+func inspectServiceHandlerDeclarations(directory string) (serviceHandlerDeclarations, error) {
+	pkg, err := parseServicePackage(directory)
+	if err != nil {
+		return serviceHandlerDeclarations{}, err
+	}
+	declarations := serviceHandlerDeclarations{types: make(map[string]int), functions: make(map[string][]*ast.FuncDecl), other: make(map[string]int)}
+	for _, file := range pkg.Files {
+		for _, declaration := range file.Decls {
+			switch value := declaration.(type) {
+			case *ast.FuncDecl:
+				if value.Recv == nil {
+					declarations.functions[value.Name.Name] = append(declarations.functions[value.Name.Name], value)
 				}
-				receiver := function.Recv.List[0].Type
-				if pointer, ok := receiver.(*ast.StarExpr); ok {
-					receiver = pointer.X
-				}
-				if identifier, ok := receiver.(*ast.Ident); ok && identifier.Name == "Service" {
-					methods[function.Name.Name] = struct{}{}
+			case *ast.GenDecl:
+				for _, spec := range value.Specs {
+					switch item := spec.(type) {
+					case *ast.TypeSpec:
+						declarations.types[item.Name.Name]++
+					case *ast.ValueSpec:
+						for _, name := range item.Names {
+							declarations.other[name.Name]++
+						}
+					}
 				}
 			}
 		}
 	}
-	return methods, nil
+	return declarations, nil
+}
+
+func validHandlerConstructor(function *ast.FuncDecl, handlerType string) bool {
+	if function == nil || function.Type.TypeParams != nil || function.Type.Params == nil || function.Type.Results == nil || len(function.Type.Params.List) != 1 || len(function.Type.Results.List) != 1 {
+		return false
+	}
+	if len(function.Type.Params.List[0].Names) > 1 || len(function.Type.Results.List[0].Names) > 1 {
+		return false
+	}
+	parameter, ok := unparen(function.Type.Params.List[0].Type).(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	parameterType, ok := unparen(parameter.X).(*ast.Ident)
+	if !ok || parameterType.Name != "Service" {
+		return false
+	}
+	result, ok := unparen(function.Type.Results.List[0].Type).(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	resultType, ok := unparen(result.X).(*ast.Ident)
+	return ok && resultType.Name == handlerType
+}
+
+func unparen(expression ast.Expr) ast.Expr {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			return expression
+		}
+		expression = parenthesized.X
+	}
+}
+
+func validateServerHandler(root string, binding Binding, requireMethods bool) error {
+	directory := filepath.Join(root, "internal", "service")
+	typeName := serverHandlerType(binding)
+	constructorName := serverHandlerConstructor(binding)
+	declarations, err := inspectServiceHandlerDeclarations(directory)
+	if err != nil {
+		return err
+	}
+	if declarations.types[typeName] != 1 || declarations.other[typeName] != 0 || len(declarations.functions[typeName]) != 0 {
+		return fmt.Errorf("rpc binding: user-owned handler type %s is missing or conflicts with another declaration", typeName)
+	}
+	constructors := declarations.functions[constructorName]
+	if len(constructors) != 1 || declarations.types[constructorName] != 0 || declarations.other[constructorName] != 0 || !validHandlerConstructor(constructors[0], typeName) {
+		return fmt.Errorf("rpc binding: user-owned handler constructor %s must have signature func(*Service) *%s", constructorName, typeName)
+	}
+	if !requireMethods {
+		return nil
+	}
+	methods, err := serviceMethods(directory, typeName)
+	if err != nil {
+		return err
+	}
+	for _, method := range binding.Methods {
+		declarations := methods[method.Name]
+		if len(declarations) == 0 {
+			return fmt.Errorf("rpc binding: user-owned handler method %s.%s is missing; run jgo generate", typeName, method.Name)
+		}
+		if len(declarations) != 1 {
+			return fmt.Errorf("rpc binding: user-owned handler method %s.%s is declared %d times", typeName, method.Name, len(declarations))
+		}
+		if err := validateServiceMethodSignature(binding, method, declarations[0]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func bindingOutputsStale(root string) (bool, error) {
@@ -515,14 +705,11 @@ func Generate(projectRoot string) (bool, error) {
 	}
 	resolvedServers := make([]Binding, 0, len(state.Servers))
 	for _, existing := range state.Servers {
-		if err := validateLegacyServerMigration(root, existing); err != nil {
-			return false, err
-		}
 		binding, resolveErr := resolve(root, BindConfig{ModuleSpec: moduleSpec(existing), Package: existing.Package, Service: existing.Service})
 		if resolveErr != nil {
 			return false, resolveErr
 		}
-		preserveServerBusinessNames(&binding, existing)
+		binding.Handler = existing.Handler
 		resolvedServers = append(resolvedServers, binding)
 	}
 	resolvedClients := make([]Binding, 0, len(state.Clients))
@@ -535,9 +722,8 @@ func Generate(projectRoot string) (bool, error) {
 		resolvedClients = append(resolvedClients, binding)
 	}
 	state.Servers, state.Clients = resolvedServers, resolvedClients
-	assignServerBusinessNames(state.Servers)
 	canonicalizeManifest(&state)
-	if err := validateServerMethodNames(state.Servers); err != nil {
+	if err := validateManifest(state); err != nil {
 		return false, err
 	}
 	paths := []string{"go.mod", "go.sum", filepath.Join(".jgo", "rpc.json"), filepath.Join("internal", "rpcclient", "clients.gen.go")}
@@ -545,8 +731,9 @@ func Generate(projectRoot string) (bool, error) {
 		paths = append(paths, filepath.Join("internal", "transport", "grpc", "external.gen.go"))
 	}
 	for _, binding := range state.Servers {
+		paths = append(paths, filepath.Join("internal", "service", handlerDeclarationPath(binding)))
 		for _, method := range binding.Methods {
-			paths = append(paths, filepath.Join("internal", "service", snake(serverBusinessName(binding, method))+".go"))
+			paths = append(paths, filepath.Join("internal", "service", serverStubPath(binding, method)))
 		}
 	}
 	err = mutateFiles(root, paths, func() error {
@@ -561,6 +748,9 @@ func Generate(projectRoot string) (bool, error) {
 			}
 		}
 		for _, binding := range state.Servers {
+			if err := createServerHandler(root, binding); err != nil {
+				return err
+			}
 			if err := createServerStubs(root, binding); err != nil {
 				return err
 			}
@@ -592,13 +782,14 @@ func regularFile(path string) bool {
 }
 
 type BindConfig struct {
-	Root       string
-	ModuleSpec string
-	Package    string
-	Service    string
-	Name       string
-	Address    string
-	SkipTidy   bool
+	Root        string
+	ModuleSpec  string
+	Package     string
+	Service     string
+	Name        string
+	Address     string
+	HandlerName string
+	SkipTidy    bool
 }
 
 func BindServer(config BindConfig) (Binding, error) {
@@ -615,29 +806,34 @@ func BindServer(config BindConfig) (Binding, error) {
 		return Binding{}, err
 	}
 	replaced := false
+	requestedHandler := strings.TrimSpace(config.HandlerName)
+	normalizedHandler := normalizeHandlerName(requestedHandler)
+	if requestedHandler != "" && !validHandlerName(normalizedHandler) {
+		return Binding{}, fmt.Errorf("rpc server: invalid handler name %q", config.HandlerName)
+	}
 	for index, existing := range state.Servers {
 		if serverBindingKey(existing) == serverBindingKey(binding) {
-			if err := validateLegacyServerMigration(root, existing); err != nil {
-				return Binding{}, err
+			binding.Handler = existing.Handler
+			if normalizedHandler != "" && normalizedHandler != existing.Handler {
+				return Binding{}, fmt.Errorf("rpc server: %s.%s is already bound to handler %s; handler names cannot be changed", existing.Package, existing.Service, existing.Handler)
 			}
-			preserveServerBusinessNames(&binding, existing)
 			state.Servers[index] = binding
 			replaced = true
 			break
 		}
 	}
 	if !replaced {
+		binding.Handler = normalizedHandler
+		if binding.Handler == "" {
+			binding.Handler = defaultServerHandlerName(binding.Service)
+		}
+		if !validHandlerName(binding.Handler) {
+			return Binding{}, fmt.Errorf("rpc server: invalid handler name %q", config.HandlerName)
+		}
 		state.Servers = append(state.Servers, binding)
 	}
-	assignServerBusinessNames(state.Servers)
-	for _, candidate := range state.Servers {
-		if serverBindingKey(candidate) == serverBindingKey(binding) {
-			binding = candidate
-			break
-		}
-	}
 	canonicalizeManifest(&state)
-	if err := validateServerMethodNames(state.Servers); err != nil {
+	if err := validateManifest(state); err != nil {
 		return Binding{}, err
 	}
 	paths := []string{
@@ -645,15 +841,19 @@ func BindServer(config BindConfig) (Binding, error) {
 		"go.sum",
 		filepath.Join(".jgo", "rpc.json"),
 		filepath.Join("internal", "transport", "grpc", "external.gen.go"),
+		filepath.Join("internal", "service", handlerDeclarationPath(binding)),
 	}
 	for _, method := range binding.Methods {
-		paths = append(paths, filepath.Join("internal", "service", snake(serverBusinessName(binding, method))+".go"))
+		paths = append(paths, filepath.Join("internal", "service", serverStubPath(binding, method)))
 	}
 	if err := mutateFiles(root, paths, func() error {
 		if err := addRequirement(root, binding.Module, binding.Version); err != nil {
 			return err
 		}
 		if err := writeServer(root, state.Servers); err != nil {
+			return err
+		}
+		if err := createServerHandler(root, binding); err != nil {
 			return err
 		}
 		if err := createServerStubs(root, binding); err != nil {
@@ -1269,6 +1469,18 @@ func loadManifest(root string) (manifest, error) {
 	if err != nil {
 		return manifest{}, err
 	}
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(contents, &header); err != nil {
+		return manifest{}, fmt.Errorf("rpc binding: decode manifest: %w", err)
+	}
+	if header.Version == 1 {
+		return manifest{}, errors.New("rpc binding: manifest version 1 is from JGO v0.4 and cannot be upgraded automatically; back up and remove .jgo/rpc.json, rebind each RPC server/client with JGO v0.5, and move server implementations from Service.<generated-name> to <Handler>.<rpc-method>")
+	}
+	if header.Version != manifestVersion {
+		return manifest{}, fmt.Errorf("rpc binding: unsupported manifest version %d", header.Version)
+	}
 	var state manifest
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
@@ -1281,9 +1493,6 @@ func loadManifest(root string) (manifest, error) {
 			err = errors.New("multiple JSON values are not allowed")
 		}
 		return manifest{}, fmt.Errorf("rpc binding: decode manifest: %w", err)
-	}
-	if state.Version != manifestVersion {
-		return manifest{}, fmt.Errorf("rpc binding: unsupported manifest version %d", state.Version)
 	}
 	if err := validateManifest(state); err != nil {
 		return manifest{}, err
@@ -1345,16 +1554,21 @@ func renderServer(root string, bindings []Binding) ([]byte, error) {
 	for index, binding := range bindings {
 		alias := aliases[binding.Package]
 		serverType := fmt.Sprintf("%sExternalServer%d", lowerFirst(binding.Service), index)
-		output.WriteString(fmt.Sprintf("type %s struct { %s.Unimplemented%sServer; application *service.Service }\n\n", serverType, alias, binding.Service))
+		handlerInterface := lowerFirst(binding.Handler) + "Handler"
+		output.WriteString(fmt.Sprintf("type %s interface {\n", handlerInterface))
 		for _, method := range binding.Methods {
-			business := serverBusinessName(binding, method)
+			output.WriteString(fmt.Sprintf("\t%s(context.Context, *%s.%s) (*%s.%s, error)\n", method.Name, alias, method.Request, alias, method.Response))
+		}
+		output.WriteString("}\n\n")
+		output.WriteString(fmt.Sprintf("type %s struct { %s.Unimplemented%sServer; handler %s }\n\n", serverType, alias, binding.Service, handlerInterface))
+		for _, method := range binding.Methods {
 			output.WriteString(fmt.Sprintf("func (server *%s) %s(ctx context.Context, request *%s.%s) (*%s.%s, error) {\n", serverType, method.Name, alias, method.Request, alias, method.Response))
-			output.WriteString(fmt.Sprintf("\tresponse, err := server.application.%s(ctx, request)\n\tif err == nil { return response, nil }\n\tvar businessError *jgoerrors.Error\n\tif stderrors.As(err, &businessError) {\n\t\ttrace.SpanFromContext(ctx).SetAttributes(attribute.Int64(\"jgo.business_code\", int64(businessError.Code())), attribute.String(\"jgo.business_message\", businessError.Message()))\n\t\treturn &%s.%s{Code: int32(businessError.Code()), Msg: businessError.Message()}, nil\n\t}\n\treturn nil, err\n}\n\n", business, alias, method.Response))
+			output.WriteString(fmt.Sprintf("\tresponse, err := server.handler.%s(ctx, request)\n\tif err == nil { return response, nil }\n\tvar businessError *jgoerrors.Error\n\tif stderrors.As(err, &businessError) {\n\t\ttrace.SpanFromContext(ctx).SetAttributes(attribute.Int64(\"jgo.business_code\", int64(businessError.Code())), attribute.String(\"jgo.business_message\", businessError.Message()))\n\t\treturn &%s.%s{Code: int32(businessError.Code()), Msg: businessError.Message()}, nil\n\t}\n\treturn nil, err\n}\n\n", method.Name, alias, method.Response))
 		}
 	}
 	output.WriteString("func registerExternal(registrar grpc.ServiceRegistrar, application *service.Service) {\n")
 	for index, binding := range bindings {
-		output.WriteString(fmt.Sprintf("\t%s.Register%sServer(registrar, &%s{application: application})\n", aliases[binding.Package], binding.Service, fmt.Sprintf("%sExternalServer%d", lowerFirst(binding.Service), index)))
+		output.WriteString(fmt.Sprintf("\t%s.Register%sServer(registrar, &%s{handler: service.%s(application)})\n", aliases[binding.Package], binding.Service, fmt.Sprintf("%sExternalServer%d", lowerFirst(binding.Service), index), serverHandlerConstructor(binding)))
 	}
 	output.WriteString("}\n")
 	formatted, err := format.Source(output.Bytes())
@@ -1364,27 +1578,58 @@ func renderServer(root string, bindings []Binding) ([]byte, error) {
 	return formatted, nil
 }
 
+func createServerHandler(root string, binding Binding) error {
+	directory := filepath.Join(root, "internal", "service")
+	typeName := serverHandlerType(binding)
+	constructorName := serverHandlerConstructor(binding)
+	declarations, err := inspectServiceHandlerDeclarations(directory)
+	if err != nil {
+		return err
+	}
+	if declarations.types[typeName] != 0 || declarations.other[typeName] != 0 || len(declarations.functions[typeName]) != 0 {
+		return validateServerHandler(root, binding, false)
+	}
+	if declarations.types[constructorName] != 0 || declarations.other[constructorName] != 0 || len(declarations.functions[constructorName]) != 0 {
+		return fmt.Errorf("rpc binding: cannot create %s because %s already exists", typeName, constructorName)
+	}
+	path := filepath.Join(directory, handlerDeclarationPath(binding))
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("rpc binding: refusing to overwrite existing handler file %s", path)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	contents := fmt.Sprintf("package service\n\n// %s implements the %s RPC service. This file is user-owned.\ntype %s struct { *Service }\n\nfunc %s(application *Service) *%s {\n\treturn &%s{Service: application}\n}\n", typeName, binding.Service, typeName, serverHandlerConstructor(binding), typeName, typeName)
+	return writeGo(path, []byte(contents))
+}
+
 func createServerStubs(root string, binding Binding) error {
-	existing, err := serviceMethodNames(filepath.Join(root, "internal", "service"))
+	receiver := serverHandlerType(binding)
+	existing, err := serviceMethods(filepath.Join(root, "internal", "service"), receiver)
 	if err != nil {
 		return err
 	}
 	for _, method := range binding.Methods {
-		name := serverBusinessName(binding, method)
-		if _, exists := existing[name]; exists {
+		declarations := existing[method.Name]
+		if len(declarations) > 1 {
+			return fmt.Errorf("rpc binding: user-owned handler method %s.%s is declared %d times", receiver, method.Name, len(declarations))
+		}
+		if len(declarations) == 1 {
+			if err := validateServiceMethodSignature(binding, method, declarations[0]); err != nil {
+				return err
+			}
 			continue
 		}
-		path := filepath.Join(root, "internal", "service", snake(name)+".go")
+		path := filepath.Join(root, "internal", "service", serverStubPath(binding, method))
 		if _, err := os.Stat(path); err == nil {
-			continue
+			return fmt.Errorf("rpc binding: refusing to overwrite existing service file %s", path)
 		} else if !os.IsNotExist(err) {
 			return err
 		}
-		contents := fmt.Sprintf("package service\n\nimport (\n\t\"context\"\n\t\"errors\"\n\tpb %q\n)\n\nfunc (s *Service) %s(context.Context, *pb.%s) (*pb.%s, error) {\n\treturn nil, errors.New(%q)\n}\n", binding.Package, name, method.Request, method.Response, name+" is not implemented")
+		contents := fmt.Sprintf("package service\n\nimport (\n\t\"context\"\n\t\"errors\"\n\tpb %q\n)\n\nfunc (h *%s) %s(context.Context, *pb.%s) (*pb.%s, error) {\n\treturn nil, errors.New(%q)\n}\n", binding.Package, receiver, method.Name, method.Request, method.Response, receiver+"."+method.Name+" is not implemented")
 		if err := writeGo(path, []byte(contents)); err != nil {
 			return err
 		}
-		existing[name] = struct{}{}
+		existing[method.Name] = []serviceMethodDeclaration{{}}
 	}
 	return nil
 }

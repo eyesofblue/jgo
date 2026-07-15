@@ -197,16 +197,39 @@ func TestListShowsExternalBindings(t *testing.T) {
 	root := t.TempDir()
 	writeCommandContract(t, root, "go.mod", "module example.com/service\n\ngo 1.24.0\n")
 	writeCommandContract(t, root, "cmd/server/main.go", "package main\nfunc main() {}\n")
-	writeCommandContract(t, root, ".jgo/rpc.json", `{"version":1,"servers":[{"module":"example.com/company-api","version":"v0.1.0","package":"example.com/company-api/gen/pb/company/user/v1","go_package":"userv1","service":"UserService"}],"clients":[{"name":"user","module":"example.com/company-api","version":"v0.1.0","package":"example.com/company-api/gen/pb/company/user/v1","go_package":"userv1","service":"UserService"}]}`)
+	writeCommandContract(t, root, ".jgo/rpc.json", `{"version":2,"servers":[{"module":"example.com/company-api","version":"v0.1.0","package":"example.com/company-api/gen/pb/company/user/v1","go_package":"userv1","service":"UserService","handler":"User"},{"module":"example.com/company-api","version":"v0.1.0","package":"example.com/company-api/gen/pb/company/admin/v1","go_package":"adminv1","service":"AdminService","handler":"Administration"}],"clients":[{"name":"user","module":"example.com/company-api","version":"v0.1.0","package":"example.com/company-api/gen/pb/company/user/v1","go_package":"userv1","service":"UserService"}]}`)
 	var output bytes.Buffer
 	if err := Execute(&output, &output, []string{"list", "--root", root}); err != nil {
 		t.Fatal(err)
 	}
-	for _, fragment := range []string{"external-server", "external-client", "UserService", "example.com/company-api@v0.1.0"} {
+	for _, fragment := range []string{"external-server", "UserHandler", "AdministrationHandler", "external-client", "UserService", "example.com/company-api@v0.1.0"} {
 		if !strings.Contains(output.String(), fragment) {
 			t.Fatalf("output missing %q:\n%s", fragment, output.String())
 		}
 	}
+	for _, fields := range [][]string{
+		{"gRPC", "external-server", "UserHandler", "example.com/company-api/gen/pb/company/user/v1.UserService", "example.com/company-api@v0.1.0"},
+		{"gRPC", "external-server", "AdministrationHandler", "example.com/company-api/gen/pb/company/admin/v1.AdminService", "example.com/company-api@v0.1.0"},
+	} {
+		if !listOutputHasFields(output.String(), fields) {
+			t.Fatalf("output missing fields %q:\n%s", fields, output.String())
+		}
+	}
+}
+
+func listOutputHasFields(output string, want []string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if fields := strings.Fields(line); len(fields) == len(want) {
+			matches := true
+			for index := range want {
+				matches = matches && fields[index] == want[index]
+			}
+			if matches {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestPrintCreatedServiceStubs(t *testing.T) {

@@ -17,12 +17,12 @@ JGO 是一个不依赖私有基础设施的 Go 服务框架和脚手架，支持
 
 ## 核心约定
 
-- 当前主干目标版本：`v0.4.1`
+- 当前主干目标版本：`v0.5.0`
 - Module：`github.com/eyesofblue/jgo`
 - 最低 Go：`1.24.0`
 - HTTP：RPC 风格路径，复杂入参和返回值使用 Go struct。
 - HTTP 响应：`{"code":0,"msg":"","data":{}}`，HTTP status 与业务 code 分离。
-- gRPC：本地协议与公共协议绑定解耦；只有本地协议需要锁定版 Buf 工具链。
+- gRPC：本地协议与公共协议绑定解耦；external server 使用独立 Handler 和原始 RPC 方法名，本地协议继续使用应用 `Service`；只有本地协议需要锁定版 Buf 工具链。
 - 运维：独立 Management Server 提供 liveness、严格默认的 readiness 和 Prometheus Metrics。
 - 生成安全：协议目录拒绝 symlink；多文件 package 要求显式选择；binding 和业务方法碰撞在写入前失败。
 - 项目类型：`web`、`grpc`、`mixed`、`proto`。

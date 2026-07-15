@@ -6,7 +6,7 @@
 
 ```bash
 jgo new <name> --module <module> --type <web|grpc|mixed|proto> \
-  [--output <dir>] [--jgo-version v0.4.1] [--go-version 1.24.0] \
+  [--output <dir>] [--jgo-version v0.5.0] [--go-version 1.24.0] \
   [--skip-tidy] [--jgo-replace <absolute-path>]
 
 jgo generate [--root <project>]
@@ -57,7 +57,7 @@ jgo pb breaking --against <buf-source>
 
 ```bash
 jgo rpc server bind <Service> --module <module>[@<version>] \
-  [--package <exact-go-import>]
+  [--package <exact-go-import>] [--handler-name <name>]
 
 jgo rpc server unbind <Service> [--package <exact-go-import>]
 
@@ -68,7 +68,7 @@ jgo rpc client bind <Service> --module <module>[@<version>] \
 jgo rpc client unbind <client-name>
 ```
 
-绑定粒度始终是整个 protobuf Service；业务代码仍按 Method 调用。服务端以 `package + Service` 为唯一键，允许同名 v1/v2 并存；外部业务方法使用 `<PackagePath><Service><Method>`，所以两个版本采用相同 Go package 名也能共存。同名 Service 并存时，`server unbind` 必须用 `--package` 精确选择。`server bind` 只用于 grpc/mixed，`client bind` 可用于 web/grpc/mixed。
+绑定粒度始终是整个 protobuf Service；业务代码仍按 Method 调用。服务端以 `package + Service` 为唯一键，每个 binding 使用独立 Handler。默认从 Service 去掉 `Service` 后缀，例如 `UserService.GetUser` 生成 `UserHandler.GetUser`；同名 Service 并存时，用 `--handler-name UserV2` 生成 `UserV2Handler.GetUser`，并在 unbind 时用 `--package` 精确选择。`--handler-name UserV2Handler` 也会规范化为同一个名称，binding 创建后不可改名。`server bind` 只用于 grpc/mixed，`client bind` 可用于 web/grpc/mixed。
 
 带 `@version` 时解析正式 module 版本或与该版本匹配的用户 `replace`，不会扫描 go.work 中的未发布代码。省略版本时只允许解析活动 `go.work` 中的同路径 module。
 
@@ -78,7 +78,9 @@ jgo rpc client unbind <client-name>
 
 `unbind` 是低频永久清理操作，不修改公共协议，不删除用户业务实现；完成后执行 tidy 和编译检查，失败自动回滚。
 
-`.jgo/rpc.json` 是 JGO 管理的绑定清单，不建议手工编辑。`jgo doctor` 会校验清单结构、module/Service 漂移、生成文件和客户端配置；`jgo generate` 根据清单重建管理代码。
+`.jgo/rpc.json` 是 JGO 管理的绑定清单，不建议手工编辑。`jgo doctor` 会校验清单结构、module/Service 漂移、生成文件、Handler 完整方法签名和客户端配置；`jgo generate` 根据清单重建管理代码。`jgo list` 的 external-server 行会显示实际 Handler 类型，包括通过 `--handler-name` 指定的名称。
+
+v0.5 使用 manifest version 2。v0.4 的 version 1 清单必须手工迁移：先备份并删除 `.jgo/rpc.json`，重新 bind server/client，再把 `Service.<旧长方法名>` 的函数体移到 `<Handler>.<RPC>`；JGO 不自动改写用户代码。
 
 旧命令 `rpc pbservice add`、`rpc pbapi add`、`rpc generate`、`rpc server add`、`rpc client add` 已彻底移除，没有兼容别名。
 

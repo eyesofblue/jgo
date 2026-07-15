@@ -72,7 +72,7 @@ jgo rpc server bind UserService --module example.com/company-api@v0.1.0
 jgo rpc client bind UserService --module example.com/company-api@v0.1.0 --name user
 ```
 
-For an unpublished module present in the active `go.work`, omit `@version`. An explicit version resolves released source or a matching `go.mod replace`, never unpublished workspace source. Server bindings use `package + Service`, so same-named v1/v2 Services may coexist; their business methods include a stable prefix derived from the complete import path, even when both versions use the same Go package name. Normalized path collisions receive a stable digest suffix. Use `rpc server unbind <Service> --package <generated-package>` when the name is ambiguous. Repeating `bind` updates a compatible module version. `unbind` permanently removes a project role/dependency; it does not edit the shared protocol.
+For an unpublished module present in the active `go.work`, omit `@version`. An explicit version resolves released source or a matching `go.mod replace`, never unpublished workspace source. Each server binding gets a user-owned handler: `UserService.GetUser` defaults to `UserHandler.GetUser`. Use `--handler-name UserV2` when same-named Services coexist, and `rpc server unbind <Service> --package <generated-package>` when unbind is ambiguous. `jgo doctor` validates complete Handler signatures, and `jgo list` shows the actual Handler entry point. Local protobuf implementations remain on `Service.<Service><Method>`. Repeating `bind` updates a compatible module version. `unbind` permanently removes a project role/dependency; it does not edit the shared protocol or user-owned handlers.
 {{end}}
 
 ## Errors, logs and security

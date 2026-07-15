@@ -9,7 +9,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func (s *Service) DemoProtoV1DemoProtoServiceGetUser(ctx context.Context, request *demoprotov1.GetUserRequest) (*demoprotov1.GetUserResponse, error) {
+func (h *DemoProtoHandler) GetUser(ctx context.Context, request *demoprotov1.GetUserRequest) (*demoprotov1.GetUserResponse, error) {
 	if request.GetUid() == 999 {
 		select {
 		case <-time.After(5 * time.Second):
